@@ -1,4 +1,5 @@
 # Disentanglement via Mechanism Sparsity Regularization: A New Principle for Nonlinear ICA.
+By Sébastien Lachapelle, Pau Rodríguez López, Yash Sharma, Katie Everett, Rémi Le Priol, Alexandre Lacoste, Simon Lacoste-Julien
 
 This repository contains the code used to run the experiments in the paper "Disentanglement via Mechanism Sparsity Regularization: A New Principle for Nonlinear ICA".
 
