@@ -199,6 +199,43 @@ def mean_corr_coef_np(x, y, method='pearson', indices=None):
     return score, cc_program_perm, assignments
 
 
+def test_consistency(z, z_hat, dataset):
+    # standardization
+    z = (z - np.mean(z, 0)) / np.std(z, 0)
+    z_hat = (z_hat - np.mean(z_hat, 0)) / np.std(z_hat, 0)
+
+    # find permutation
+    reg = LinearRegression().fit(z_hat, z)
+    L = reg.coef_
+    perm = linear_sum_assignment(-1 * np.abs(L))
+    score = np.abs(L)[perm].mean()
+    perm_mat = np.zeros_like(L)
+    perm_mat[perm] = 1 # perm_mat is P^T in paper
+    LP = np.matmul(L, perm_mat.transpose())
+
+    # Compute G-consistency pattern
+    C = np.ones_like(L)
+    if hasattr(dataset, "gt_g"):
+        gt_g = dataset.gt_g.cpu().numpy()
+        g_pattern = np.maximum(0, 1 - np.matmul(gt_g, 1 - gt_g.T)) * np.maximum(0, 1 - np.matmul(gt_g.T, 1 - gt_g))
+        C *= g_pattern
+    if hasattr(dataset, "gt_gc"):
+        gt_gc = dataset.gt_gc.cpu().numpy()
+        gc_pattern = np.maximum(0, 1 - np.matmul(gt_gc, 1 - gt_gc.T))
+        C *= gc_pattern
+
+    L_pattern = np.matmul(C, perm_mat)
+
+    r2 = 0
+    for i in range(z.shape[1]):
+        masked_z_hat = z_hat * L_pattern[i, :]
+        reg = LinearRegression().fit(masked_z_hat, z[:, i])
+        r2 += reg.score(masked_z_hat, z[:, i])
+    r2 /= z.shape[1]
+
+    return r2
+
+
 def edge_errors(target, pred):
     diff = target - pred
 
@@ -219,5 +256,6 @@ def evaluate_disentanglement(model, data_loader, device, opt, no_r2=False):
     else:
         r2 = None
     mcc, cc, assignments = mean_corr_coef_np(z, z_hat)
-    return r2, mcc, cc, assignments, z, z_hat
+    consistency_r2 = test_consistency(z, z_hat, data_loader.dataset)
+    return r2, mcc, cc, assignments, consistency_r2, z, z_hat
 

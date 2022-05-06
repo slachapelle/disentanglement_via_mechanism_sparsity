@@ -358,7 +358,7 @@ def main(opt):
 
                 # plotting
                 if len(evaluator.state.metrics) > 0:
-                    r2, mcc, cc, assignments, z, z_hat = evaluate_disentanglement(model, test_loader, device, opt, no_r2=False)
+                    r2, mcc, cc, assignments, consistency_r2, z, z_hat = evaluate_disentanglement(model, test_loader, device, opt, no_r2=False)
                     fig = plot_01_matrix(cc, title="Representations correlation matrix", row_label="Ground-truth",
                                          col_label="Learned", row_names=z_names)
                     logger.log_figure("correlation_matrix", fig, step=engine.state.iteration)
@@ -367,6 +367,7 @@ def main(opt):
                     # cheap mcc log
                     logger.log_metrics(step=engine.state.iteration, metrics={"r2": r2})
                     logger.log_metrics(step=engine.state.iteration, metrics={"mcc": mcc})
+                    logger.log_metrics(step=engine.state.iteration, metrics={"consistency_r2": consistency_r2})
 
                     # permutation matrix, is such that z ~ matmul(perm_mat, z_hat)
                     perm_mat = np.zeros_like(cc)
@@ -523,10 +524,10 @@ def main(opt):
         metrics["num_examples_train"] = len(train_loader.dataset)
 
         if opt.mode != "latent_transition_only" :
-            r2, mcc, cc, assignments, z, z_hat = evaluate_disentanglement(model, test_loader, device, opt)
+            r2, mcc, cc, assignments, consistency_r2, z, z_hat = evaluate_disentanglement(model, test_loader, device, opt)
             metrics["linear_score_final"] = r2
             metrics["mean_corr_coef_final"] = mcc
-
+            metrics["consistency_r2_final"] = consistency_r2
 
             # Evaluate linear_score and MCC on best models after thresholding
             best_files = [f.name for f in os.scandir(opt.output_dir) if f.name.startswith("best")]
@@ -536,9 +537,10 @@ def main(opt):
                 model.eval()
             else:
                 print(f"Found 0 thresh_best checkpoints, reporting final metric")
-            r2, mcc, cc, assignments, z, z_hat = evaluate_disentanglement(model, test_loader, device, opt)
+            r2, mcc, cc, assignments, consistency_r2, z, z_hat = evaluate_disentanglement(model, test_loader, device, opt)
             metrics["linear_score_best"] = r2
             metrics["mean_corr_coef_best"] = mcc
+            metrics["consistency_r2_best"] = consistency_r2
             perm_mat = np.zeros((opt.z_max_dim, opt.z_max_dim))
             perm_mat[assignments] = 1.0
 
