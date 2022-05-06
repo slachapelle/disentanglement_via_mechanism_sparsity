@@ -18,7 +18,7 @@ from scripts.solver import Solver
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent))
 from train import get_dataset, get_loader
 from universal_logger.logger import UniversalLogger
-from metrics import mean_corr_coef, get_linear_score
+from metrics import get_z_z_hat, mean_corr_coef_np, get_linear_score
 
 torch.backends.cudnn.enabled = True
 torch.backends.cudnn.benchmark = True
@@ -80,7 +80,8 @@ def main(args, writer=None):
 
         ## ---- Evaluate performance ---- ##
         # compute MCC and save representation
-        mcc, cc_program_perm, assignments, z, z_hat = mean_corr_coef(net.net, test_loader, device, opt=args)
+        z, z_hat = get_z_z_hat(net.net, test_loader, device, opt=args)
+        mcc, cc_program_perm, assignments = mean_corr_coef_np(z, z_hat)
         linear_score = get_linear_score(z_hat, z)
 
         ## ---- Save ---- ##

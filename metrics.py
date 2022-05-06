@@ -92,42 +92,59 @@ class MyMetrics(Metric):
 
         return rval
 
-def get_linear_score(x, y):
-    reg = LinearRegression().fit(x, y)
-    return reg.score(x, y)
 
-
-def linear_regression_metric(model, data_loader, device, num_samples=int(1e5), indices=None, opt=None):
+def get_z_z_hat(model, data_loader, device, num_samples=int(1e5), opt=None):
     with torch.no_grad():
-        if model.latent_model.z_block_size != 1:
-            raise NotImplementedError("This function is implemented only for z_block_size == 1")
         model.eval()
         z_list = []
         z_hat_list = []
         sample_counter = 0
         for batch in data_loader:
-            obs, _, _, _, z = batch
+            obs, cont_c, disc_c, _, z = batch
             obs, z = obs[:, -1].to(device), z[:, -1].to(device)
+
             if opt.mode in ["vae", "random_vae", "supervised_vae"]:
+                if model.latent_model.z_block_size != 1:
+                    raise NotImplementedError("This function is implemented only for z_block_size == 1")
                 z_hat = model.latent_model.mean(model.latent_model.transform_q_params(model.encode(obs)))
                 z_hat = z_hat.view(z_hat.shape[0], -1)
             elif opt.mode in ["infonce", "random_infonce", "supervised_infonce"]:
+                if model.latent_model.z_block_size != 1:
+                    raise NotImplementedError("This function is implemented only for z_block_size == 1")
                 z_hat = model.latent_model.transform_q_params(model.encode(obs))[0]
                 z_hat = z_hat.view(z_hat.shape[0], -1)
+            elif opt.mode == "ivae":
+                # WARNING: not using disc_c (discrete auxiliary information).
+                _, encoder_params, _, _ = model(obs, cont_c)
+                z_hat = encoder_params[0]  # extract mean
+            elif opt.mode in ["tcvae", "betavae"]:
+                z_hat = model.encode(obs)[1].select(-1, 0)
+            elif opt.mode in ["slowvae", "pcl"]:
+                z_hat = model._encode(obs)[:, :model.z_dim]
             else:
-                raise NotImplementedError(f"function linear_regression_metric is not implemented for --mode {opt.mode}")
-
+                raise NotImplementedError(f"function get_z_z_hat is not implemented for --mode {opt.mode}")
             z_list.append(z)
             z_hat_list.append(z_hat)
             sample_counter += obs.shape[0]
             if sample_counter >= num_samples:
                 break
+        # if num_samples is greater than number of examples in dataset
+        if sample_counter < num_samples:
+            num_samples = sample_counter
 
         z = torch.cat(z_list, 0)[:int(num_samples)]
         z_hat = torch.cat(z_hat_list, 0)[:int(num_samples)]
 
-        z, z_hat = z.cpu().numpy(), z_hat.cpu().numpy()
+        return z.cpu().numpy(), z_hat.cpu().numpy()
 
+
+def get_linear_score(x, y):
+    reg = LinearRegression().fit(x, y)
+    return reg.score(x, y)
+
+
+def linear_regression_metric(z, z_hat, indices=None):
+    with torch.no_grad():
         score = get_linear_score(z_hat, z)
 
         # masking z_hat
@@ -182,54 +199,6 @@ def mean_corr_coef_np(x, y, method='pearson', indices=None):
     return score, cc_program_perm, assignments
 
 
-def mean_corr_coef(model, data_loader, device, num_samples=int(1e5), method='pearson', indices=None, opt=None):
-    """Source: https://github.com/ilkhem/icebeem/blob/master/metrics/mcc.py"""
-    with torch.no_grad():
-        model.eval()
-        z_list = []
-        z_hat_list = []
-        sample_counter = 0
-        for batch in data_loader:
-            obs, cont_c, disc_c, _, z = batch
-            obs, z = obs[:, -1].to(device), z[:, -1].to(device)
-
-            if opt.mode in ["vae", "random_vae", "supervised_vae"]:
-                if model.latent_model.z_block_size != 1:
-                    raise NotImplementedError("This function is implemented only for z_block_size == 1")
-                z_hat = model.latent_model.mean(model.latent_model.transform_q_params(model.encode(obs)))
-                z_hat = z_hat.view(z_hat.shape[0], -1)
-            elif opt.mode in ["infonce", "random_infonce", "supervised_infonce"]:
-                if model.latent_model.z_block_size != 1:
-                    raise NotImplementedError("This function is implemented only for z_block_size == 1")
-                z_hat = model.latent_model.transform_q_params(model.encode(obs))[0]
-                z_hat = z_hat.view(z_hat.shape[0], -1)
-            elif opt.mode == "ivae":
-                # WARNING: not using disc_c (discrete auxiliary information).
-                _, encoder_params, _, _ = model(obs, cont_c)
-                z_hat = encoder_params[0]  # extract mean
-            elif opt.mode in ["tcvae", "betavae"]:
-                z_hat = model.encode(obs)[1].select(-1, 0)
-            elif opt.mode in ["slowvae", "pcl"]:
-                z_hat = model._encode(obs)[:, :model.z_dim]
-            else:
-                raise NotImplementedError(f"function mean_corr_coef is not implemented for --mode {opt.mode}")
-            z_list.append(z)
-            z_hat_list.append(z_hat)
-            sample_counter += obs.shape[0]
-            if sample_counter >= num_samples:
-                break
-        # if num_samples is greater than number of examples in dataset
-        if sample_counter < num_samples:
-            num_samples = sample_counter
-
-        z = torch.cat(z_list, 0)[:int(num_samples)]
-        z_hat = torch.cat(z_hat_list, 0)[:int(num_samples)]
-
-        z, z_hat = z.cpu().numpy(), z_hat.cpu().numpy()
-        score, cc_program_perm, assignments = mean_corr_coef_np(z, z_hat, method, indices)
-        return score, cc_program_perm, assignments, z, z_hat
-
-
 def edge_errors(target, pred):
     diff = target - pred
 
@@ -243,5 +212,12 @@ def shd(target, pred):
     return sum(edge_errors(target, pred))
 
 
-
+def evaluate_disentanglement(model, data_loader, device, opt, no_r2=False):
+    z, z_hat = get_z_z_hat(model, data_loader, device, opt=opt)
+    if not no_r2:
+        r2, _ = linear_regression_metric(z, z_hat)
+    else:
+        r2 = None
+    mcc, cc, assignments = mean_corr_coef_np(z, z_hat)
+    return r2, mcc, cc, assignments, z, z_hat
 

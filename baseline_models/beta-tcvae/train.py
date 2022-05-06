@@ -31,7 +31,7 @@ from lib.flows import FactorialNormalizingFlow
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent))
 from train import get_dataset, get_loader
 from universal_logger.logger import UniversalLogger
-from metrics import mean_corr_coef, get_linear_score
+from metrics import get_z_z_hat, mean_corr_coef_np, get_linear_score
 from model.nn import MLP as MLP_ilcm
 
 class View(torch.nn.Module):
@@ -538,7 +538,8 @@ def main(args):
         args.mode = "tcvae"
     else:
         args.mode = "betavae"
-    mcc, cc_program_perm, assignments, z, z_hat = mean_corr_coef(vae, test_loader, device, opt=args)
+    z, z_hat = get_z_z_hat(vae, test_loader, device, opt=args)
+    mcc, cc_program_perm, assignments = mean_corr_coef_np(z, z_hat)
     linear_score = get_linear_score(z_hat, z)
 
     ## ---- Save ---- ##

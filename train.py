@@ -36,7 +36,7 @@ from ignite.utils import setup_logger
 # adding the folder containing the folder `disentanglement_via_mechanism_sparsity` to sys.path
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 from disentanglement_via_mechanism_sparsity.universal_logger.logger import UniversalLogger
-from disentanglement_via_mechanism_sparsity.metrics import MyMetrics, linear_regression_metric, mean_corr_coef, edge_errors
+from disentanglement_via_mechanism_sparsity.metrics import MyMetrics, evaluate_disentanglement, edge_errors
 from disentanglement_via_mechanism_sparsity.plot import plot_01_matrix
 from disentanglement_via_mechanism_sparsity.data.synthetic import get_ToyManifoldDatasets
 from disentanglement_via_mechanism_sparsity.model.ilcm_vae import ILCM_VAE
@@ -358,13 +358,14 @@ def main(opt):
 
                 # plotting
                 if len(evaluator.state.metrics) > 0:
-                    mcc, cc, assignments, _, _ = mean_corr_coef(model, test_loader, device, opt=opt)
+                    r2, mcc, cc, assignments, z, z_hat = evaluate_disentanglement(model, test_loader, device, opt, no_r2=False)
                     fig = plot_01_matrix(cc, title="Representations correlation matrix", row_label="Ground-truth",
                                          col_label="Learned", row_names=z_names)
                     logger.log_figure("correlation_matrix", fig, step=engine.state.iteration)
                     plt.close(fig)
 
                     # cheap mcc log
+                    logger.log_metrics(step=engine.state.iteration, metrics={"r2": r2})
                     logger.log_metrics(step=engine.state.iteration, metrics={"mcc": mcc})
 
                     # permutation matrix, is such that z ~ matmul(perm_mat, z_hat)
@@ -476,11 +477,6 @@ def main(opt):
 
         logger.log_metrics(step=engine.state.iteration, metrics=metrics)
 
-    # evaluating representation
-    def evaluate_disentanglement(model, metrics, postfix=""):
-        metrics["linear_score" + postfix], _ = linear_regression_metric(model, test_loader, device, opt=opt)
-        metrics["mean_corr_coef" + postfix], _, assignments, z, z_hat = mean_corr_coef(model, test_loader, device, opt=opt)
-        return assignments, z, z_hat
 
     @trainer.on(Events.COMPLETED)
     def final_evaluate_and_log(engine):
@@ -527,7 +523,10 @@ def main(opt):
         metrics["num_examples_train"] = len(train_loader.dataset)
 
         if opt.mode != "latent_transition_only" :
-            evaluate_disentanglement(model, metrics, postfix="_final")
+            r2, mcc, cc, assignments, z, z_hat = evaluate_disentanglement(model, test_loader, device, opt)
+            metrics["linear_score_final"] = r2
+            metrics["mean_corr_coef_final"] = mcc
+
 
             # Evaluate linear_score and MCC on best models after thresholding
             best_files = [f.name for f in os.scandir(opt.output_dir) if f.name.startswith("best")]
@@ -537,7 +536,9 @@ def main(opt):
                 model.eval()
             else:
                 print(f"Found 0 thresh_best checkpoints, reporting final metric")
-            assignments, z, z_hat = evaluate_disentanglement(model, metrics, postfix="_best")
+            r2, mcc, cc, assignments, z, z_hat = evaluate_disentanglement(model, test_loader, device, opt)
+            metrics["linear_score_best"] = r2
+            metrics["mean_corr_coef_best"] = mcc
             perm_mat = np.zeros((opt.z_max_dim, opt.z_max_dim))
             perm_mat[assignments] = 1.0
 

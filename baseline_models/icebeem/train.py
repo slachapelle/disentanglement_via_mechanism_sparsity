@@ -18,7 +18,7 @@ from baseline_models.icebeem.models.ivae.ivae_wrapper import IVAE_wrapper
 from baseline_models.icebeem.models.icebeem_wrapper import ICEBEEM_wrapper
 from train import get_dataset, get_loader
 from universal_logger.logger import UniversalLogger
-from metrics import mean_corr_coef, get_linear_score
+from metrics import get_z_z_hat, mean_corr_coef_np, get_linear_score
 
 def parse_sim():
     parser = argparse.ArgumentParser(description='')
@@ -130,7 +130,8 @@ def main(args):
 
     ## ---- Evaluate performance ---- ##
     # compute MCC and save representation
-    mcc, cc_program_perm, assignments, z, z_hat = mean_corr_coef(model, test_loader, device, opt=args)
+    z, z_hat = get_z_z_hat(model, test_loader, device, opt=args)
+    mcc, cc_program_perm, assignments = mean_corr_coef_np(z, z_hat)
     linear_score = get_linear_score(z_hat, z)
 
     ## ---- Save ---- ##
