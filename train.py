@@ -37,7 +37,7 @@ from ignite.utils import setup_logger
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 from disentanglement_via_mechanism_sparsity.universal_logger.logger import UniversalLogger
 from disentanglement_via_mechanism_sparsity.metrics import MyMetrics, evaluate_disentanglement, edge_errors
-from disentanglement_via_mechanism_sparsity.plot import plot_01_matrix
+from disentanglement_via_mechanism_sparsity.plot import plot_matrix
 from disentanglement_via_mechanism_sparsity.data.synthetic import get_ToyManifoldDatasets
 from disentanglement_via_mechanism_sparsity.model.ilcm_vae import ILCM_VAE
 from disentanglement_via_mechanism_sparsity.model.latent_models_vae import FCGaussianLatentModel
@@ -140,7 +140,7 @@ def main(opt):
         comet_exp = None
     logger = UniversalLogger(comet=comet_exp,
                              stdout=(not opt.no_print),
-                             json=opt.output_dir, throttle=None)
+                             json=opt.output_dir, throttle=None, max_fig_save=2)
 
     ## ---- Data ---- ##
     image_shape, cont_c_dim, disc_c_dim, disc_c_n_values, train_dataset, valid_dataset, test_dataset = get_dataset(opt)
@@ -161,6 +161,18 @@ def main(opt):
     m_scaling = 1. / int(np.product(image_shape)) / opt.z_max_dim
     g_scaling = 1. / int(np.product(image_shape)) #/ opt.z_max_dim
     gc_scaling = 1. / int(np.product(image_shape)) #/ max(cont_c_dim, 1)
+
+    # plot ground-truth graphs
+    if hasattr(train_dataset, "gt_gc"):
+        fig = plot_matrix(train_dataset.gt_gc, title="Ground-truth G^a", row_label="Z", col_label="A")
+        logger.log_figure("gt_ga", fig, step=0)
+        plt.close(fig)
+
+    if hasattr(train_dataset, "gt_g"):
+        fig = plot_matrix(train_dataset.gt_g, title="Ground-truth G^z", row_label="Z^t", col_label="Z^t-1")
+        logger.log_figure("gt_gz", fig, step=0)
+        plt.close(fig)
+
 
     ## ---- Training Loop ---- ##
     def step(engine, batch):
@@ -281,7 +293,7 @@ def main(opt):
     trainer.add_event_handler(Events.STARTED, init_checkpoint_handler)
 
     # periodic model saving
-    checkpoint_handler = Checkpoint(to_save, DiskSaver(opt.output_dir, create_dir=True), n_saved=2)
+    checkpoint_handler = Checkpoint(to_save, DiskSaver(opt.output_dir, create_dir=True), n_saved=1)
     trainer.add_event_handler(Events.ITERATION_COMPLETED(every=opt.ckpt_period), checkpoint_handler)
 
 
@@ -358,32 +370,36 @@ def main(opt):
 
                 # plotting
                 if len(evaluator.state.metrics) > 0:
-                    r2, mcc, cc, assignments, consistency_r2, z, z_hat = evaluate_disentanglement(model, test_loader, device, opt, no_r2=False)
-                    fig = plot_01_matrix(cc, title="Representations correlation matrix", row_label="Ground-truth",
+                    mcc, consistent_r, r, cc, C_hat, C_pattern, perm_mat, z, z_hat = evaluate_disentanglement(model, test_loader, device, opt)
+                    fig = plot_matrix(cc, title="Representations correlation matrix", row_label="Ground-truth",
                                          col_label="Learned", row_names=z_names)
                     logger.log_figure("correlation_matrix", fig, step=engine.state.iteration)
                     plt.close(fig)
+                    fig = plot_matrix(np.abs(C_hat) / np.max(np.abs(C_hat)), title="Estimated |C|", row_label="Ground-truth",
+                                         col_label="Learned", row_names=z_names)
+                    logger.log_figure("estimated_C", fig, step=engine.state.iteration)
+                    plt.close(fig)
+                    fig = plot_matrix(C_pattern, title="Expected C pattern", row_label="Ground-truth",
+                                         col_label="Learned", row_names=z_names)
+                    logger.log_figure("C_pattern", fig, step=engine.state.iteration)
+                    plt.close(fig)
 
                     # cheap mcc log
-                    logger.log_metrics(step=engine.state.iteration, metrics={"r2": r2})
                     logger.log_metrics(step=engine.state.iteration, metrics={"mcc": mcc})
-                    logger.log_metrics(step=engine.state.iteration, metrics={"consistency_r2": consistency_r2})
-
-                    # permutation matrix, is such that z ~ matmul(perm_mat, z_hat)
-                    perm_mat = np.zeros_like(cc)
-                    perm_mat[assignments] = 1
+                    logger.log_metrics(step=engine.state.iteration, metrics={"consistent_r": consistent_r})
+                    logger.log_metrics(step=engine.state.iteration, metrics={"r": r})
 
                     # plot masks
                     if opt.n_lag > 0:
                         with torch.no_grad():
                             g_prob = model.latent_model.g.get_proba().cpu().numpy()
-                        fig = plot_01_matrix(g_prob, title="G mask", row_label="Z^t", col_label="Z^t-1")
+                        fig = plot_matrix(g_prob, title="G mask", row_label="Z^t", col_label="Z^t-1")
                         logger.log_figure("G_mask", fig, step=engine.state.iteration)
                         plt.close(fig)
 
                         # same but permute the graph according to optimal MCC permutation
                         if perm_mat is not None:
-                            fig = plot_01_matrix(np.matmul(np.matmul(perm_mat, g_prob), perm_mat.T),
+                            fig = plot_matrix(np.matmul(np.matmul(perm_mat, g_prob), perm_mat.T),
                                                  title="Permuted G mask", row_label="Z^t", col_label="Z^t-1",
                                                  row_names=z_names, col_names=z_names)
                             logger.log_figure("permuted_G_mask", fig, step=engine.state.iteration)
@@ -392,12 +408,12 @@ def main(opt):
                     if cont_c_dim > 0:
                         with torch.no_grad():
                             gc_prob = model.latent_model.gc.get_proba().cpu().numpy()
-                        fig = plot_01_matrix(gc_prob, title="GC mask", row_label="Z", col_label="C")
+                        fig = plot_matrix(gc_prob, title="GC mask", row_label="Z", col_label="C")
                         logger.log_figure("GC_mask", fig, step=engine.state.iteration)
                         plt.close(fig)
 
                         if perm_mat is not None:
-                            fig = plot_01_matrix(np.matmul(perm_mat, gc_prob), title="Permuted GC mask", row_label="Z",
+                            fig = plot_matrix(np.matmul(perm_mat, gc_prob), title="Permuted GC mask", row_label="Z",
                                                  col_label="C", row_names=z_names)
                             logger.log_figure("permuted_GC_mask", fig, step=engine.state.iteration)
                             plt.close(fig)
@@ -405,12 +421,12 @@ def main(opt):
                     if disc_c_dim > 0:
                         with torch.no_grad():
                             gc_disc_prob = model.latent_model.gc_disc.get_proba().cpu().numpy()
-                        fig = plot_01_matrix(gc_disc_prob, title="GC_disc_mask", row_label="Z", col_label="C")
+                        fig = plot_matrix(gc_disc_prob, title="GC_disc_mask", row_label="Z", col_label="C")
                         logger.log_figure("GC_disc_mask", fig, step=engine.state.iteration)
                         plt.close(fig)
 
                         if perm_mat is not None:
-                            fig = plot_01_matrix(np.matmul(perm_mat, gc_disc_prob), title="Permuted GC_disc_mask",
+                            fig = plot_matrix(np.matmul(perm_mat, gc_disc_prob), title="Permuted GC_disc_mask",
                                                  row_label="Z", col_label="C", row_names=z_names)
                             logger.log_figure("permuted_GC_disc_mask", fig, step=engine.state.iteration)
                             plt.close(fig)
@@ -421,14 +437,14 @@ def main(opt):
                     if opt.n_lag > 0:
                         with torch.no_grad():
                             g_prob = model.latent_model.g.get_proba().cpu().numpy()
-                        fig = plot_01_matrix(g_prob, title="G mask", row_label="Z^t", col_label="Z^t-1",
+                        fig = plot_matrix(g_prob, title="G mask", row_label="Z^t", col_label="Z^t-1",
                                              row_to_mark=indices)
                         logger.log_figure("G_mask", fig, step=engine.state.iteration)
                         plt.close(fig)
                     if cont_c_dim > 0:
                         with torch.no_grad():
                             gc_prob = model.latent_model.gc.get_proba().cpu().numpy()
-                        fig = plot_01_matrix(gc_prob, title="GC mask", row_label="Z", col_label="C",
+                        fig = plot_matrix(gc_prob, title="GC mask", row_label="Z", col_label="C",
                                              row_to_mark=indices)
                         logger.log_figure("GC_mask", fig, step=engine.state.iteration)
                         plt.close(fig)
@@ -524,10 +540,10 @@ def main(opt):
         metrics["num_examples_train"] = len(train_loader.dataset)
 
         if opt.mode != "latent_transition_only" :
-            r2, mcc, cc, assignments, consistency_r2, z, z_hat = evaluate_disentanglement(model, test_loader, device, opt)
-            metrics["linear_score_final"] = r2
+            mcc, consistent_r, r, cc, C_hat, C_pattern, perm_mat, z, z_hat = evaluate_disentanglement(model, test_loader, device, opt)
             metrics["mean_corr_coef_final"] = mcc
-            metrics["consistency_r2_final"] = consistency_r2
+            metrics["consistent_r_final"] = consistent_r
+            metrics["r_final"] = r
 
             # Evaluate linear_score and MCC on best models after thresholding
             best_files = [f.name for f in os.scandir(opt.output_dir) if f.name.startswith("best")]
@@ -537,12 +553,10 @@ def main(opt):
                 model.eval()
             else:
                 print(f"Found 0 thresh_best checkpoints, reporting final metric")
-            r2, mcc, cc, assignments, consistency_r2, z, z_hat = evaluate_disentanglement(model, test_loader, device, opt)
-            metrics["linear_score_best"] = r2
+            mcc, consistent_r, r, cc, C_hat, C_pattern, perm_mat, z, z_hat = evaluate_disentanglement(model, test_loader, device, opt)
             metrics["mean_corr_coef_best"] = mcc
-            metrics["consistency_r2_best"] = consistency_r2
-            perm_mat = np.zeros((opt.z_max_dim, opt.z_max_dim))
-            perm_mat[assignments] = 1.0
+            metrics["consistency_r2_best"] = consistent_r
+            metrics["r_best"] = r
 
             # save both ground_truth and learned latents
             np.save(os.path.join(opt.output_dir, "z_hat_best.npy"), z_hat)

@@ -1,5 +1,6 @@
 import numpy as np
 from sklearn.linear_model import LinearRegression
+import sklearn
 from scipy.optimize import linear_sum_assignment
 from scipy.stats import spearmanr
 
@@ -138,26 +139,6 @@ def get_z_z_hat(model, data_loader, device, num_samples=int(1e5), opt=None):
         return z.cpu().numpy(), z_hat.cpu().numpy()
 
 
-def get_linear_score(x, y):
-    reg = LinearRegression().fit(x, y)
-    return reg.score(x, y)
-
-
-def linear_regression_metric(z, z_hat, indices=None):
-    with torch.no_grad():
-        score = get_linear_score(z_hat, z)
-
-        # masking z_hat
-        # TODO: this does not take into account case where z_block_size > 1
-        if indices is not None:
-            z_hat_m = z_hat[:, indices[-z.shape[0]:]]
-            score_m = get_linear_score(z_hat_m, z)
-        else:
-            score_m = 0
-
-        return score, score_m
-
-
 def mean_corr_coef_np(x, y, method='pearson', indices=None):
     """
     Source: https://github.com/ilkhem/icebeem/blob/master/metrics/mcc.py
@@ -199,22 +180,13 @@ def mean_corr_coef_np(x, y, method='pearson', indices=None):
     return score, cc_program_perm, assignments
 
 
-def test_consistency(z, z_hat, dataset):
-    # standardization
-    z = (z - np.mean(z, 0)) / np.std(z, 0)
-    z_hat = (z_hat - np.mean(z_hat, 0)) / np.std(z_hat, 0)
-
-    # find permutation
-    reg = LinearRegression().fit(z_hat, z)
-    L = reg.coef_
-    perm = linear_sum_assignment(-1 * np.abs(L))
-    score = np.abs(L)[perm].mean()
-    perm_mat = np.zeros_like(L)
-    perm_mat[perm] = 1 # perm_mat is P^T in paper
-    LP = np.matmul(L, perm_mat.transpose())
+def test_consistency(z, z_hat, assignments, dataset):
+    z_dim = z.shape[1]
+    perm_mat = np.zeros((z_dim, z_dim))
+    perm_mat[assignments] = 1 # perm_mat is P^T in paper
 
     # Compute G-consistency pattern
-    C = np.ones_like(L)
+    C = np.ones_like(perm_mat)
     if hasattr(dataset, "gt_g"):
         gt_g = dataset.gt_g.cpu().numpy()
         g_pattern = np.maximum(0, 1 - np.matmul(gt_g, 1 - gt_g.T)) * np.maximum(0, 1 - np.matmul(gt_g.T, 1 - gt_g))
@@ -226,14 +198,37 @@ def test_consistency(z, z_hat, dataset):
 
     L_pattern = np.matmul(C, perm_mat)
 
-    r2 = 0
+    r = 0
     for i in range(z.shape[1]):
         masked_z_hat = z_hat * L_pattern[i, :]
-        reg = LinearRegression().fit(masked_z_hat, z[:, i])
-        r2 += reg.score(masked_z_hat, z[:, i])
-    r2 /= z.shape[1]
+        reg = LinearRegression(fit_intercept=True).fit(masked_z_hat, z[:, i])
+        r += np.sqrt(reg.score(masked_z_hat, z[:, i]))  # the sqrt of R^2 is called the "coefficient of multiple correlation".
+    r /= z.shape[1]
 
-    return r2
+    return r, C
+
+
+def get_linear_score(x, y):
+    reg = LinearRegression(fit_intercept=True).fit(x, y)
+    y_pred = reg.predict(x)
+    r2s = sklearn.metrics.r2_score(y, y_pred, multioutput='raw_values')
+    r = np.mean(np.sqrt(r2s))  # To be comparable to MCC (this is the average of R = coefficient of multiple correlation)
+    return r, reg.coef_
+
+
+def linear_regression_metric(z, z_hat, indices=None):
+    with torch.no_grad():
+        score, L_hat = get_linear_score(z_hat, z)
+
+        # masking z_hat
+        # TODO: this does not take into account case where z_block_size > 1
+        if indices is not None:
+            z_hat_m = z_hat[:, indices[-z.shape[0]:]]
+            score_m = get_linear_score(z_hat_m, z)
+        else:
+            score_m = 0
+
+        return score, score_m, L_hat
 
 
 def edge_errors(target, pred):
@@ -249,13 +244,15 @@ def shd(target, pred):
     return sum(edge_errors(target, pred))
 
 
-def evaluate_disentanglement(model, data_loader, device, opt, no_r2=False):
+def evaluate_disentanglement(model, data_loader, device, opt):
     z, z_hat = get_z_z_hat(model, data_loader, device, opt=opt)
-    if not no_r2:
-        r2, _ = linear_regression_metric(z, z_hat)
-    else:
-        r2 = None
     mcc, cc, assignments = mean_corr_coef_np(z, z_hat)
-    consistency_r2 = test_consistency(z, z_hat, data_loader.dataset)
-    return r2, mcc, cc, assignments, consistency_r2, z, z_hat
+    consistent_r, C_pattern = test_consistency(z, z_hat, assignments, data_loader.dataset)
+    r, _, L_hat = linear_regression_metric(z, z_hat)
+
+    perm_mat = np.zeros_like(L_hat)
+    perm_mat[assignments] = 1  # perm_mat is P^T in paper
+    C_hat = np.matmul(L_hat, perm_mat.T)
+
+    return mcc, consistent_r, r, cc, C_hat, C_pattern, perm_mat, z, z_hat
 
