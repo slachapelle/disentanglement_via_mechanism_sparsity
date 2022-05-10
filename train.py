@@ -555,7 +555,7 @@ def main(opt):
                 print(f"Found 0 thresh_best checkpoints, reporting final metric")
             mcc, consistent_r, r, cc, C_hat, C_pattern, perm_mat, z, z_hat = evaluate_disentanglement(model, test_loader, device, opt)
             metrics["mean_corr_coef_best"] = mcc
-            metrics["consistency_r2_best"] = consistent_r
+            metrics["consistent_r_best"] = consistent_r
             metrics["r_best"] = r
 
             # save both ground_truth and learned latents
