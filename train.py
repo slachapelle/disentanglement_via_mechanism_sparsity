@@ -37,7 +37,7 @@ from ignite.utils import setup_logger
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 from disentanglement_via_mechanism_sparsity.universal_logger.logger import UniversalLogger
 from disentanglement_via_mechanism_sparsity.metrics import MyMetrics, evaluate_disentanglement, edge_errors
-from disentanglement_via_mechanism_sparsity.plot import plot_matrix
+from disentanglement_via_mechanism_sparsity.plot import plot_matrix, plot_weighted_adjacency_vs_steps
 from disentanglement_via_mechanism_sparsity.data.synthetic import get_ToyManifoldDatasets
 from disentanglement_via_mechanism_sparsity.model.ilcm_vae import ILCM_VAE
 from disentanglement_via_mechanism_sparsity.model.latent_models_vae import FCGaussianLatentModel
@@ -61,7 +61,7 @@ def get_dataset(opt):
     manifold, transition_model = opt.dataset.split("-")[-1].split("/")
     datasets = get_ToyManifoldDatasets(manifold, transition_model, split=(train_prop, opt.valid_prop, opt.test_prop),
                                        z_dim=opt.gt_z_dim, x_dim=opt.gt_x_dim, num_samples=opt.num_samples,
-                                       no_norm=opt.no_norm)
+                                       no_norm=opt.no_norm, rand_g_density=opt.rand_g_density, gt_graph_name=opt.gt_graph_name)
     return datasets
 
 
@@ -405,6 +405,20 @@ def main(opt):
                             logger.log_figure("permuted_G_mask", fig, step=engine.state.iteration)
                             plt.close(fig)
 
+                            if not hasattr(engine, "g_probs"):
+                                engine.g_probs = []
+                                engine.g_probs_iterations = []
+                            engine.g_probs.append(g_prob)
+                            engine.g_probs_iterations.append(engine.state.iteration)
+                            if hasattr(train_dataset, "gt_g"):
+                                perm_gt_g = np.matmul(np.matmul(perm_mat.T, train_dataset.gt_g), perm_mat)
+                            else:
+                                perm_gt_g = np.zeros_like(perm_mat)
+                            fig = plot_weighted_adjacency_vs_steps(np.stack(engine.g_probs, 0), perm_gt_g, engine.g_probs_iterations)
+                            logger.log_figure("G^z", fig, step=engine.state.iteration)
+                            plt.close(fig)
+
+
                     if cont_c_dim > 0:
                         with torch.no_grad():
                             gc_prob = model.latent_model.gc.get_proba().cpu().numpy()
@@ -418,6 +432,19 @@ def main(opt):
                             logger.log_figure("permuted_GC_mask", fig, step=engine.state.iteration)
                             plt.close(fig)
 
+                            if not hasattr(engine, "gc_probs"):
+                                engine.gc_probs = []
+                                engine.gc_probs_iterations = []
+                            engine.gc_probs.append(gc_prob)
+                            engine.gc_probs_iterations.append(engine.state.iteration)
+                            if hasattr(train_dataset, "gt_gc"):
+                                perm_gt_gc = np.matmul(perm_mat.T, train_dataset.gt_gc)
+                            else:
+                                perm_gt_gc = np.zeros_like(perm_mat)
+                            fig = plot_weighted_adjacency_vs_steps(np.stack(engine.gc_probs, 0), perm_gt_gc, engine.gc_probs_iterations)
+                            logger.log_figure("G^a", fig, step=engine.state.iteration)
+                            plt.close(fig)
+
                     if disc_c_dim > 0:
                         with torch.no_grad():
                             gc_disc_prob = model.latent_model.gc_disc.get_proba().cpu().numpy()
@@ -429,6 +456,19 @@ def main(opt):
                             fig = plot_matrix(np.matmul(perm_mat, gc_disc_prob), title="Permuted GC_disc_mask",
                                                  row_label="Z", col_label="C", row_names=z_names)
                             logger.log_figure("permuted_GC_disc_mask", fig, step=engine.state.iteration)
+                            plt.close(fig)
+
+                            if not hasattr(engine, "gc_disc_probs"):
+                                engine.gc_disc_probs = []
+                                engine.gc_disc_probs_iterations = []
+                            engine.gc_disc_probs.append(gc_disc_prob)
+                            engine.gc_disc_probs_iterations.append(engine.state.iteration)
+                            if hasattr(train_dataset, "gt_gc_disc"):
+                                perm_gt_gc_disc = np.matmul(perm_mat.T, train_dataset.gt_gc_disc)
+                            else:
+                                perm_gt_gc_disc = np.zeros_like(perm_mat)
+                            fig = plot_weighted_adjacency_vs_steps(np.stack(engine.gc_disc_probs, 0), perm_gt_gc_disc, engine.gc_disc_probs_iterations)
+                            logger.log_figure("G^a (discrete)", fig, step=engine.state.iteration)
                             plt.close(fig)
 
             if "latent_transition_only" == opt.mode:
@@ -600,6 +640,10 @@ def init_exp(args=None):
                         help="ground truth dimensionality of z (for TRANSITION_MODEL == 'temporal_sparsity_non_trivial')")
     parser.add_argument("--gt_x_dim", type=int, default=20,
                         help="ground truth dimensionality of x (for MANIFOLD == 'nn')")
+    parser.add_argument("--rand_g_density", type=float, default=None,
+                        help="Probability of sampling an edge. When None, the graph is set to a default (or to gt_graph_name).")
+    parser.add_argument("--gt_graph_name", type=str, default=None, choices=["graph_action_1", "graph_temporal_1"],
+                        help="Name of the ground-truth graph to use in synthetic data.")
     parser.add_argument("--num_samples", type=int, default=int(1e6),
                         help="num_samples for synthetic datasets")
     parser.add_argument("--no_norm", action="store_true",

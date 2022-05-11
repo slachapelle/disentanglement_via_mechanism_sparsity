@@ -139,7 +139,7 @@ def get_z_z_hat(model, data_loader, device, num_samples=int(1e5), opt=None):
         return z.cpu().numpy(), z_hat.cpu().numpy()
 
 
-def mean_corr_coef_np(x, y, method='pearson', indices=None):
+def mean_corr_coef_np(z, z_hat, method='pearson', indices=None):
     """
     Source: https://github.com/ilkhem/icebeem/blob/master/metrics/mcc.py
 
@@ -155,6 +155,7 @@ def mean_corr_coef_np(x, y, method='pearson', indices=None):
                     use Spearman's nonparametric rank correlation coefficient
     :return: float
     """
+    x, y = z, z_hat
     d = x.shape[1]
     if method == 'pearson':
         cc = np.corrcoef(x, y, rowvar=False)[:d, d:]
@@ -217,18 +218,21 @@ def get_linear_score(x, y):
 
 
 def linear_regression_metric(z, z_hat, indices=None):
-    with torch.no_grad():
-        score, L_hat = get_linear_score(z_hat, z)
+    # standardize z and z_hat
+    z = (z - np.mean(z, 0)) / np.std(z, 0)
+    z_hat = (z_hat - np.mean(z_hat, 0)) / np.std(z_hat, 0)
 
-        # masking z_hat
-        # TODO: this does not take into account case where z_block_size > 1
-        if indices is not None:
-            z_hat_m = z_hat[:, indices[-z.shape[0]:]]
-            score_m = get_linear_score(z_hat_m, z)
-        else:
-            score_m = 0
+    score, L_hat = get_linear_score(z_hat, z)
 
-        return score, score_m, L_hat
+    # masking z_hat
+    # TODO: this does not take into account case where z_block_size > 1
+    if indices is not None:
+        z_hat_m = z_hat[:, indices[-z.shape[0]:]]
+        score_m, _ = get_linear_score(z_hat_m, z)
+    else:
+        score_m = 0
+
+    return score, score_m, L_hat
 
 
 def edge_errors(target, pred):

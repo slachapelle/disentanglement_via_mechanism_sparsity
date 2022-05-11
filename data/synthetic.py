@@ -71,7 +71,7 @@ def get_decoder(manifold, x_dim, z_dim, rng_data_gen):
 
 
 class ActionToyManifoldDataset(torch.utils.data.Dataset):
-    def __init__(self, manifold, transition_model, num_samples, seed, x_dim, z_dim, no_norm=False):
+    def __init__(self, manifold, transition_model, num_samples, seed, x_dim, z_dim, no_norm=False, gt_gc=None):
         super(ActionToyManifoldDataset, self).__init__()
         self.manifold = manifold
         self.transition_model = transition_model
@@ -81,6 +81,8 @@ class ActionToyManifoldDataset(torch.utils.data.Dataset):
         self.z_dim = z_dim
         self.num_samples = num_samples
         self.no_norm = no_norm
+        if gt_gc is not None:
+            assert self.transition_model == "action_sparsity_non_trivial"
 
         if self.transition_model == "action_sparsity_trivial":
             def get_mean_var(c, var_fac=0.0001):
@@ -91,7 +93,8 @@ class ActionToyManifoldDataset(torch.utils.data.Dataset):
             self.gt_gc = torch.eye(self.z_dim)
         elif self.transition_model == "action_sparsity_non_trivial":
             mat_range = np.repeat(np.arange(3, self.z_dim + 3)[:, None] / np.pi, self.z_dim, 1)
-            gt_gc = np.concatenate([np.eye(self.z_dim), np.eye(self.z_dim)[:, 0:1]], 1)[:, 1:] + np.eye(self.z_dim)
+            if gt_gc is None:
+                gt_gc = np.concatenate([np.eye(self.z_dim), np.eye(self.z_dim)[:, 0:1]], 1)[:, 1:] + np.eye(self.z_dim)
             shift = np.repeat(np.arange(0, self.z_dim)[:, None], self.z_dim, 1)
 
             def get_mean_var(c, var_fac=0.0001):
@@ -164,7 +167,7 @@ class ActionToyManifoldDataset(torch.utils.data.Dataset):
 
 
 class TemporalToyManifoldDataset(torch.utils.data.Dataset):
-    def __init__(self, manifold, transition_model, num_samples, seed, x_dim, z_dim, no_norm=False):
+    def __init__(self, manifold, transition_model, num_samples, seed, x_dim, z_dim, no_norm=False, gt_g=None):
         super(TemporalToyManifoldDataset, self).__init__()
         self.manifold = manifold
         self.transition_model = transition_model
@@ -174,6 +177,9 @@ class TemporalToyManifoldDataset(torch.utils.data.Dataset):
         self.z_dim = z_dim
         self.num_samples = num_samples
         self.no_norm = no_norm
+        if gt_g is not None:
+            assert self.transition_model == "temporal_sparsity_non_trivial"
+            assert (np.diag(gt_g) == 1).all()
 
         if self.transition_model == "temporal_sparsity_trivial":
             def get_mean_var(z_t, lr=0.5, var_fac=0.0001):
@@ -185,7 +191,8 @@ class TemporalToyManifoldDataset(torch.utils.data.Dataset):
 
         elif self.transition_model == "temporal_sparsity_non_trivial":
             mat_range = np.repeat(np.arange(3, self.z_dim + 3)[:, None] / np.pi, self.z_dim, 1)
-            gt_g = np.tril(np.ones((self.z_dim, self.z_dim)))
+            if gt_g is None:
+                gt_g = np.tril(np.ones((self.z_dim, self.z_dim)))
             shift = np.repeat(np.arange(0, self.z_dim)[:, None], self.z_dim, 1)
 
             def get_mean_var(z_t, lr=0.5, var_fac=0.0001):
@@ -274,28 +281,60 @@ class TemporalToyManifoldDataset(torch.utils.data.Dataset):
 
 
 def get_ToyManifoldDatasets(manifold, transition_model, split=(0.7, 0.15, 0.15), z_dim=2, x_dim=10, num_samples=1e6,
-                            no_norm=False):
+                            no_norm=False, rand_g_density=None, gt_graph_name=None):
+    if rand_g_density is not None:
+        assert 0 <= rand_g_density <= 1
+        graph_proba = np.minimum(1, np.eye(z_dim) + rand_g_density)  # forces to have all self-loops (diagonal)
+        gt_graph = np.random.binomial(1, graph_proba)
+        print(gt_graph)
+    elif gt_graph_name == "graph_action_1":
+        assert z_dim == 10
+        gt_graph = np.array([[0, 1, 0, 1, 1, 0, 1, 0, 0, 1],
+                             [0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+                             [0, 0, 0, 1, 0, 0, 0, 1, 1, 0],
+                             [0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+                             [0, 1, 0, 1, 1, 0, 0, 0, 0, 0],
+                             [0, 1, 0, 1, 1, 0, 0, 0, 0, 1],
+                             [0, 0, 1, 0, 1, 0, 0, 0, 0, 0],
+                             [1, 0, 0, 1, 0, 1, 1, 0, 0, 1],
+                             [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                             [0, 0, 0, 0, 0, 0, 0, 1, 0, 0]]).astype("float")
+    elif gt_graph_name == "graph_temporal_1":
+        assert z_dim == 10
+        gt_graph = np.array([[1, 1, 1, 1, 1, 1, 1, 1, 0, 1],
+                             [1, 1, 1, 1, 1, 0, 1, 1, 1, 0],
+                             [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                             [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                             [1, 0, 1, 1, 1, 1, 1, 1, 1, 1],
+                             [1, 0, 1, 1, 1, 1, 0, 0, 1, 1],
+                             [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                             [1, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+                             [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                             [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]]).astype("float")
+    else:
+        gt_graph = None
+
     if transition_model.startswith("action_sparsity"):
         cont_c_dim = z_dim
         disc_c_dim = 0
         disc_c_n_values = []
         train_dataset = ActionToyManifoldDataset(manifold, transition_model, int(num_samples * split[0]), seed=1,
-                                                 x_dim=x_dim, z_dim=z_dim, no_norm=no_norm)
+                                                 x_dim=x_dim, z_dim=z_dim, no_norm=no_norm, gt_gc=gt_graph)
         valid_dataset = ActionToyManifoldDataset(manifold, transition_model, int(num_samples * split[1]), seed=2,
-                                                 x_dim=x_dim, z_dim=z_dim, no_norm=no_norm)
+                                                 x_dim=x_dim, z_dim=z_dim, no_norm=no_norm, gt_gc=gt_graph)
         test_dataset = ActionToyManifoldDataset(manifold, transition_model, int(num_samples * split[2]), seed=3,
-                                                x_dim=x_dim, z_dim=z_dim, no_norm=no_norm)
+                                                x_dim=x_dim, z_dim=z_dim, no_norm=no_norm, gt_gc=gt_graph)
 
     elif transition_model.startswith("temporal_sparsity"):
         cont_c_dim = 0
         disc_c_dim = 0
         disc_c_n_values = []
         train_dataset = TemporalToyManifoldDataset(manifold, transition_model, int(num_samples * split[0]), seed=1,
-                                                 x_dim=x_dim, z_dim=z_dim, no_norm=no_norm)
+                                                 x_dim=x_dim, z_dim=z_dim, no_norm=no_norm, gt_g=gt_graph)
         valid_dataset = TemporalToyManifoldDataset(manifold, transition_model, int(num_samples * split[1]), seed=2,
-                                                 x_dim=x_dim, z_dim=z_dim, no_norm=no_norm)
+                                                 x_dim=x_dim, z_dim=z_dim, no_norm=no_norm, gt_g=gt_graph)
         test_dataset = TemporalToyManifoldDataset(manifold, transition_model, int(num_samples * split[2]), seed=3,
-                                                x_dim=x_dim, z_dim=z_dim, no_norm=no_norm)
+                                                x_dim=x_dim, z_dim=z_dim, no_norm=no_norm, gt_g=gt_graph)
 
     image_shape = (x_dim,)
 
