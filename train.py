@@ -141,15 +141,48 @@ def main(opt):
     ## ---- Model ---- ##
     model = build_model(opt, device, image_shape, cont_c_dim, disc_c_dim, disc_c_n_values)
 
+    if opt.set_constraint_to_gt:
+        if hasattr(train_dataset, "gt_g"):
+            opt.g_constraint = train_dataset.gt_g.sum().item()
+        if hasattr(train_dataset, "gt_gc"):
+            opt.gc_constraint = train_dataset.gt_gc.sum().item()
+
     ## ---- Optimization ---- ##
     # setting scaling constants for regularization:
     g_scaling = 1. / int(np.product(image_shape))  # / opt.z_max_dim
     gc_scaling = 1. / int(np.product(image_shape))  # / max(cont_c_dim, 1)
 
+    if opt.lr_dual is None:
+        opt.lr_dual = opt.lr
+
     is_constrained = (opt.g_constraint > 0. or opt.gc_constraint > 0.)
     cmp = CustomCMP(opt.g_reg_coeff, opt.gc_reg_coeff, opt.g_constraint, opt.gc_constraint, g_scaling, gc_scaling)
     formulation = cooper.LagrangianFormulation(cmp)
-    primal_optimizer = optim.Adam(model.parameters(), lr=opt.lr, amsgrad=opt.amsgrad)
+
+    if opt.no_adam_gumbel:
+        gumbel_params = []
+        other_params = []
+        for name, param in model.named_parameters():
+            if "log_alpha" in name:
+                gumbel_params.append(param)
+            else:
+                other_params.append(param)
+        optimizer1 = optim.Adam(other_params, lr=opt.lr, amsgrad=opt.amsgrad)
+        optimizer2 = optim.SGD(gumbel_params, lr=opt.lr_gumbel)
+        class MultipleOptimizer(object):
+            def __init__(self, *op):
+                self.optimizers = op
+
+            def zero_grad(self):
+                for op in self.optimizers:
+                    op.zero_grad()
+
+            def step(self):
+                for op in self.optimizers:
+                    op.step()
+        primal_optimizer = MultipleOptimizer(optimizer1, optimizer2)
+    else:
+        primal_optimizer = optim.Adam(model.parameters(), lr=opt.lr, amsgrad=opt.amsgrad)
 
     if is_constrained:
         dual_optimizer = cooper.optim.partial_optimizer(torch.optim.SGD, lr=opt.lr)
@@ -179,10 +212,19 @@ def main(opt):
     ## ---- Training Loop ---- ##
     def step(engine, batch):
         if "random" in opt.mode:
-            return 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            return 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 
         model.train()
         constrained_optimizer.zero_grad()
+
+        # we keep the masks frozen for opt.frozen_masks_period iterations
+        if engine.state.iteration <= opt.frozen_masks_period:
+            model.latent_model.freeze_masks()
+            if formulation.ineq_multipliers is not None:
+                # setting requires_grad to False causes problems with optimizer down the line. Let's just set it to 0.
+                torch.nn.init.constant_(formulation.ineq_multipliers.weight, 0.)
+        else:
+            model.latent_model.unfreeze_masks()
 
         obs, cont_c, disc_c, valid, other = batch
         obs, cont_c, disc_c, valid, other = obs.to(device), cont_c.to(device), disc_c.to(device), valid.to(device), other.to(device)
@@ -205,34 +247,46 @@ def main(opt):
                     print(f"{name} is nan.")
                 grad_norm.append(torch.norm(p.grad.data, p=2.))
         grad_norm = torch.norm(torch.stack(grad_norm), p=2.).item()
+
         # make a step
         constrained_optimizer.step()
 
         if formulation.ineq_multipliers is not None:
+            # when masks are frozen, keep multipliers to zeros.
+            if engine.state.iteration <= opt.frozen_masks_period:
+                torch.nn.init.constant_(formulation.ineq_multipliers.weight, 0.)
             multiplier = formulation.ineq_multipliers.forward().item()
         else:
             multiplier = 0.
 
-        return cmp.state, grad_norm, lagrangian.item(), multiplier
+        loss = cmp.state.loss.item()
+        defect = 0 if cmp.state.ineq_defect is None else cmp.state.ineq_defect.item()
+        g_reg = cmp.state.misc["g_reg"]
+        gc_reg = cmp.state.misc["gc_reg"]
+        reconstruction_loss = cmp.state.misc["reconstruction_loss"]
+        kl = cmp.state.misc["kl"]
+        nll = cmp.state.misc["nll"]
+
+        return loss, defect, g_reg, gc_reg, reconstruction_loss, kl, nll, grad_norm, lagrangian.item(), multiplier
 
 
     trainer = Engine(step)
     trainer.logger = setup_logger(level=logging.INFO, stream=sys.stdout)
 
     # keep running average of the training loss
-    RunningAverage(output_transform=lambda x: x[0].loss.item(), epoch_bound=False).attach(trainer, "loss_train")
-    RunningAverage(output_transform=lambda x: 0 if x[0].ineq_defect is None else x[0].ineq_defect.item(), epoch_bound=False, alpha=1e-6).attach(trainer, "defect")
-    RunningAverage(output_transform=lambda x: x[0].misc["g_reg"], epoch_bound=False, alpha=1e-6).attach(trainer, "g_reg")
-    RunningAverage(output_transform=lambda x: x[0].misc["gc_reg"], epoch_bound=False, alpha=1e-6).attach(trainer, "gc_reg")
-    RunningAverage(output_transform=lambda x: x[0].misc["reconstruction_loss"], epoch_bound=False, alpha=1e-6).attach(trainer, "reconstruction_loss")
-    RunningAverage(output_transform=lambda x: x[0].misc["kl"], epoch_bound=False, alpha=1e-6).attach(trainer, "kl")
-    RunningAverage(output_transform=lambda x: x[0].misc["nll"], epoch_bound=False).attach(trainer, "nll_train")
-    RunningAverage(output_transform=lambda x: x[1], epoch_bound=False, alpha=1e-6).attach(trainer, "grad_norm")
-    RunningAverage(output_transform=lambda x: x[2], epoch_bound=False, alpha=1e-6).attach(trainer, "lagrangian")
-    RunningAverage(output_transform=lambda x: x[3], epoch_bound=False, alpha=1e-6).attach(trainer, "lagrangian_multiplier")
+    RunningAverage(output_transform=lambda x: x[0], epoch_bound=False).attach(trainer, "loss_train")
+    RunningAverage(output_transform=lambda x: x[1], epoch_bound=False, alpha=1e-6).attach(trainer, "defect")
+    RunningAverage(output_transform=lambda x: x[2], epoch_bound=False, alpha=1e-6).attach(trainer, "g_reg")
+    RunningAverage(output_transform=lambda x: x[3], epoch_bound=False, alpha=1e-6).attach(trainer, "gc_reg")
+    RunningAverage(output_transform=lambda x: x[4], epoch_bound=False, alpha=1e-6).attach(trainer, "reconstruction_loss")
+    RunningAverage(output_transform=lambda x: x[5], epoch_bound=False, alpha=1e-6).attach(trainer, "kl")
+    RunningAverage(output_transform=lambda x: x[6], epoch_bound=False).attach(trainer, "nll_train")
+    RunningAverage(output_transform=lambda x: x[7], epoch_bound=False, alpha=1e-6).attach(trainer, "grad_norm")
+    RunningAverage(output_transform=lambda x: x[8], epoch_bound=False, alpha=1e-6).attach(trainer, "lagrangian")
+    RunningAverage(output_transform=lambda x: x[9], epoch_bound=False, alpha=1e-6).attach(trainer, "lagrangian_multiplier")
 
     # makes the code stop if nans are encountered
-    trainer.add_event_handler(Events.ITERATION_COMPLETED, TerminateOnNan(output_transform=lambda x: x[0].loss.item()))
+    trainer.add_event_handler(Events.ITERATION_COMPLETED, TerminateOnNan())
 
     # Log GPU info
     if device != "cpu":
@@ -628,7 +682,7 @@ def init_exp(args=None):
                         help="ground truth dimensionality of x (for MANIFOLD == 'nn')")
     parser.add_argument("--rand_g_density", type=float, default=None,
                         help="Probability of sampling an edge. When None, the graph is set to a default (or to gt_graph_name).")
-    parser.add_argument("--gt_graph_name", type=str, default=None, choices=["graph_action_1", "graph_temporal_1"],
+    parser.add_argument("--gt_graph_name", type=str, default=None, choices=["graph_action_1", "graph_action_2", "graph_temporal_1", "graph_temporal_2"],
                         help="Name of the ground-truth graph to use in synthetic data.")
     parser.add_argument("--num_samples", type=int, default=int(1e6),
                         help="num_samples for synthetic datasets")
@@ -679,8 +733,8 @@ def init_exp(args=None):
                         help="Constrain G^z to have no more than this number of edges")
     parser.add_argument("--gc_constraint", type=float, default=0.0,
                         help="Constrain G^a to have no more than this number of edges")
-    parser.add_argument("--dual_restarts", action="store_true",
-                        help="When doing constrained optim, restarts the dual value to zero as soon as the constraint is satisfied")
+    parser.add_argument("--set_constraint_to_gt", action="store_true",
+                        help="Will set the maximal number of edges to the number of edges in the ground-truth.")
     parser.add_argument("--drawhard", action="store_true",
                         help="Instead of using soft samples in gumbel sigmoid, use hard samples in forward.")
     parser.add_argument("--gumbel_temperature", type=float, default=1.0,
@@ -717,6 +771,14 @@ def init_exp(args=None):
 
     # optimization
     parser.add_argument("--lr", type=float, default=5e-4, help="Learning rate")
+    parser.add_argument("--no_adam_gumbel", action="store_true",
+                        help="Use SGD for gumbel parameters and Adam for the rest.")
+    parser.add_argument("--lr_gumbel", type=float, default=1.0, help="Learning rate")
+    parser.add_argument("--lr_dual", type=float, default=None, help="Learning rate")
+    parser.add_argument("--dual_restarts", action="store_true",
+                        help="When doing constrained optim, restarts the dual value to zero as soon as the constraint is satisfied")
+    parser.add_argument("--frozen_masks_period", type=int, default=0,
+                        help="Number of iterations we keep masks frozen")
     parser.add_argument("--max_grad_clip", type=float, default=0,
                         help="Max gradient value (clip above - for off)")
     parser.add_argument("--max_grad_norm", type=float, default=0,

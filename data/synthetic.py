@@ -299,6 +299,21 @@ def get_ToyManifoldDatasets(manifold, transition_model, split=(0.7, 0.15, 0.15),
                              [1, 0, 0, 1, 0, 1, 1, 0, 0, 1],
                              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
                              [0, 0, 0, 0, 0, 0, 0, 1, 0, 0]]).astype("float")
+    elif gt_graph_name == "graph_action_1.1":
+        assert z_dim == 10
+        gt_graph = np.array([[0, 1, 0, 1, 1, 0, 1, 0, 0, 1],
+                             [0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+                             [0, 0, 0, 1, 0, 0, 0, 1, 1, 0],
+                             [0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+                             [0, 1, 0, 1, 1, 0, 0, 0, 0, 0],
+                             [0, 1, 0, 1, 1, 0, 0, 0, 0, 1],
+                             [0, 0, 1, 0, 1, 0, 0, 0, 0, 0],
+                             [1, 0, 0, 1, 0, 1, 1, 0, 0, 1],
+                             [0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+                             [0, 0, 0, 0, 0, 0, 0, 1, 0, 0]]).astype("float")
+    elif gt_graph_name == "graph_action_2":
+        assert z_dim % 2 == 0
+        gt_graph = block_diag(*[np.ones((2, 2)) for _ in range(int(z_dim / 2))]).astype("float")
     elif gt_graph_name == "graph_temporal_1":
         assert z_dim == 10
         gt_graph = np.array([[1, 1, 1, 1, 1, 1, 1, 1, 0, 1],
@@ -311,6 +326,9 @@ def get_ToyManifoldDatasets(manifold, transition_model, split=(0.7, 0.15, 0.15),
                              [1, 1, 1, 1, 1, 1, 1, 1, 1, 0],
                              [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
                              [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]]).astype("float")
+    elif gt_graph_name == "graph_temporal_2":
+        assert z_dim % 2 == 0
+        gt_graph = block_diag(np.ones((int(z_dim / 2),int(z_dim / 2))), np.ones((int(z_dim / 2),int(z_dim / 2)))).astype("float")
     else:
         gt_graph = None
 
