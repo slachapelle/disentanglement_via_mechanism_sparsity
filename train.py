@@ -11,7 +11,6 @@ import time
 from copy import deepcopy
 import math
 from pprint import pprint
-from qj_global import qj
 import logging
 
 try:
@@ -33,6 +32,8 @@ from ignite.metrics import RunningAverage
 from ignite.contrib.metrics import GpuInfo
 from ignite.utils import setup_logger
 
+import cooper
+
 # adding the folder containing the folder `disentanglement_via_mechanism_sparsity` to sys.path
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 from disentanglement_via_mechanism_sparsity.universal_logger.logger import UniversalLogger
@@ -41,6 +42,7 @@ from disentanglement_via_mechanism_sparsity.plot import plot_matrix, plot_weight
 from disentanglement_via_mechanism_sparsity.data.synthetic import get_ToyManifoldDatasets
 from disentanglement_via_mechanism_sparsity.model.ilcm_vae import ILCM_VAE
 from disentanglement_via_mechanism_sparsity.model.latent_models_vae import FCGaussianLatentModel
+from disentanglement_via_mechanism_sparsity.optimization import CustomCMP
 
 
 def set_manual_seed(opt):
@@ -98,16 +100,6 @@ def build_model(opt, device, image_shape, cont_c_dim, disc_c_dim, disc_c_n_value
     return model
 
 
-def compute_nll(log_likelihood, valid, opt):
-    valid = valid.type(log_likelihood.type())
-    if opt.include_invalid:
-        nll = - torch.mean(log_likelihood)
-    else:
-        nll = - torch.dot(log_likelihood, valid) / torch.sum(valid)
-
-    return nll
-
-
 def compute_reconstruction_loss(obs, model, reduce=True):
     obs_hat = model.reconstruct(obs)
 
@@ -150,17 +142,27 @@ def main(opt):
     model = build_model(opt, device, image_shape, cont_c_dim, disc_c_dim, disc_c_n_values)
 
     ## ---- Optimization ---- ##
-    optimizer = optim.Adam(model.parameters(), lr=opt.lr, amsgrad=opt.amsgrad)
-
-    if opt.scheduler == "reduce_on_plateau":
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1,
-                                                                patience=opt.scheduler_patience, threshold=1e-4,
-                                                                threshold_mode='rel', verbose=True)
-
     # setting scaling constants for regularization:
-    m_scaling = 1. / int(np.product(image_shape)) / opt.z_max_dim
-    g_scaling = 1. / int(np.product(image_shape)) #/ opt.z_max_dim
-    gc_scaling = 1. / int(np.product(image_shape)) #/ max(cont_c_dim, 1)
+    g_scaling = 1. / int(np.product(image_shape))  # / opt.z_max_dim
+    gc_scaling = 1. / int(np.product(image_shape))  # / max(cont_c_dim, 1)
+
+    is_constrained = (opt.g_constraint > 0. or opt.gc_constraint > 0.)
+    cmp = CustomCMP(opt.g_reg_coeff, opt.gc_reg_coeff, opt.g_constraint, opt.gc_constraint, g_scaling, gc_scaling)
+    formulation = cooper.LagrangianFormulation(cmp)
+    primal_optimizer = optim.Adam(model.parameters(), lr=opt.lr, amsgrad=opt.amsgrad)
+
+    if is_constrained:
+        dual_optimizer = cooper.optim.partial_optimizer(torch.optim.SGD, lr=opt.lr)
+    else:
+        dual_optimizer = None
+
+    constrained_optimizer = cooper.ConstrainedOptimizer(formulation, primal_optimizer, dual_optimizer,
+                                                        dual_restarts=opt.dual_restarts)
+
+    #if opt.scheduler == "reduce_on_plateau":
+    #    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1,
+    #                                                            patience=opt.scheduler_patience, threshold=1e-4,
+    #                                                            threshold_mode='rel', verbose=True)
 
     # plot ground-truth graphs
     if hasattr(train_dataset, "gt_gc"):
@@ -180,38 +182,14 @@ def main(opt):
             return 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 
         model.train()
-        optimizer.zero_grad()
+        constrained_optimizer.zero_grad()
 
         obs, cont_c, disc_c, valid, other = batch
         obs, cont_c, disc_c, valid, other = obs.to(device), cont_c.to(device), disc_c.to(device), valid.to(device), other.to(device)
 
-        if opt.mode == "vae":
-            elbo, reconstruction_loss, kl, _ = model.elbo(obs, cont_c, disc_c)
-            loss = compute_nll(elbo, valid, opt)
-        elif opt.mode == "supervised_vae":
-            obs = obs[:, -1]
-            other = other[:, -1]
-            z_hat = model.latent_model.mean(model.latent_model.transform_q_params(model.encode(obs)))
-            loss = torch.mean((z_hat.view(z_hat.shape[0], -1) - other) ** 2)
-            reconstruction_loss, kl = 0, 0
-        elif opt.mode == "latent_transition_only":
-            ll = model.log_likelihood(other, cont_c, disc_c)
-            loss = compute_nll(ll, valid, opt)
-            reconstruction_loss, kl = 0, 0
-        else:
-            raise NotImplementedError(f"--mode {opt.mode} is not implemented.")
-
-        nll = loss.item()
-
-        # regularization
-        g_reg = model.latent_model.g_regularizer()
-        gc_reg = model.latent_model.gc_regularizer()
-        if opt.g_reg_coeff > 0:
-            loss += opt.g_reg_coeff * g_reg  * g_scaling
-        if opt.gc_reg_coeff > 0:
-            loss += opt.gc_reg_coeff * gc_reg * gc_scaling
-
-        loss.backward()
+        # cooper stuff
+        lagrangian = formulation.composite_objective(cmp.closure, model, obs, cont_c, disc_c, valid, other, opt)
+        formulation.custom_backward(lagrangian)
 
         # clip grad
         if opt.max_grad_clip > 0:
@@ -227,26 +205,34 @@ def main(opt):
                     print(f"{name} is nan.")
                 grad_norm.append(torch.norm(p.grad.data, p=2.))
         grad_norm = torch.norm(torch.stack(grad_norm), p=2.).item()
-
         # make a step
-        optimizer.step()
+        constrained_optimizer.step()
 
-        return loss.item(), g_reg.item(), gc_reg.item(), grad_norm, reconstruction_loss, kl, nll
+        if formulation.ineq_multipliers is not None:
+            multiplier = formulation.ineq_multipliers.forward().item()
+        else:
+            multiplier = 0.
+
+        return cmp.state, grad_norm, lagrangian.item(), multiplier
+
 
     trainer = Engine(step)
     trainer.logger = setup_logger(level=logging.INFO, stream=sys.stdout)
 
     # keep running average of the training loss
-    RunningAverage(output_transform=lambda x: x[0], epoch_bound=False).attach(trainer, "loss_train")
-    RunningAverage(output_transform=lambda x: x[1], epoch_bound=False, alpha=1e-6).attach(trainer, "g_reg")
-    RunningAverage(output_transform=lambda x: x[2], epoch_bound=False, alpha=1e-6).attach(trainer, "gc_reg")
-    RunningAverage(output_transform=lambda x: x[3], epoch_bound=False, alpha=1e-6).attach(trainer, "grad_norm")
-    RunningAverage(output_transform=lambda x: x[4], epoch_bound=False, alpha=1e-6).attach(trainer, "reconstruction_loss")
-    RunningAverage(output_transform=lambda x: x[5], epoch_bound=False, alpha=1e-6).attach(trainer, "kl")
-    RunningAverage(output_transform=lambda x: x[6], epoch_bound=False).attach(trainer, "nll_train")
+    RunningAverage(output_transform=lambda x: x[0].loss.item(), epoch_bound=False).attach(trainer, "loss_train")
+    RunningAverage(output_transform=lambda x: 0 if x[0].ineq_defect is None else x[0].ineq_defect.item(), epoch_bound=False, alpha=1e-6).attach(trainer, "defect")
+    RunningAverage(output_transform=lambda x: x[0].misc["g_reg"], epoch_bound=False, alpha=1e-6).attach(trainer, "g_reg")
+    RunningAverage(output_transform=lambda x: x[0].misc["gc_reg"], epoch_bound=False, alpha=1e-6).attach(trainer, "gc_reg")
+    RunningAverage(output_transform=lambda x: x[0].misc["reconstruction_loss"], epoch_bound=False, alpha=1e-6).attach(trainer, "reconstruction_loss")
+    RunningAverage(output_transform=lambda x: x[0].misc["kl"], epoch_bound=False, alpha=1e-6).attach(trainer, "kl")
+    RunningAverage(output_transform=lambda x: x[0].misc["nll"], epoch_bound=False).attach(trainer, "nll_train")
+    RunningAverage(output_transform=lambda x: x[1], epoch_bound=False, alpha=1e-6).attach(trainer, "grad_norm")
+    RunningAverage(output_transform=lambda x: x[2], epoch_bound=False, alpha=1e-6).attach(trainer, "lagrangian")
+    RunningAverage(output_transform=lambda x: x[3], epoch_bound=False, alpha=1e-6).attach(trainer, "lagrangian_multiplier")
 
     # makes the code stop if nans are encountered
-    trainer.add_event_handler(Events.ITERATION_COMPLETED, TerminateOnNan())
+    trainer.add_event_handler(Events.ITERATION_COMPLETED, TerminateOnNan(output_transform=lambda x: x[0].loss.item()))
 
     # Log GPU info
     if device != "cpu":
@@ -285,7 +271,7 @@ def main(opt):
     MyMetrics(opt.include_invalid, "test").attach(evaluator_test, "all")
 
     ## ---- Checkpointing ---- ##
-    to_save = {"model": model, "optimizer": optimizer}
+    to_save = {"model": model} #, "optimizer": optimizer}
 
     # save initial model, before starting to train
     init_checkpoint_handler = Checkpoint(to_save, DiskSaver(opt.output_dir, create_dir=True), n_saved=1,
@@ -522,9 +508,9 @@ def main(opt):
             metrics["best_nll_valid"] = - best_score
 
         # LR scheduling
-        if opt.scheduler == "reduce_on_plateau":
-            scheduler.step(- best_score)
-        metrics["last_lr"] = scheduler._last_lr[0]
+        #if opt.scheduler == "reduce_on_plateau":
+        #    scheduler.step(- best_score)
+        #metrics["last_lr"] = scheduler._last_lr[0]
 
         # timers
         metrics["time_avg_iter"] = timer_avg_iter.value()
@@ -589,7 +575,7 @@ def main(opt):
             best_files = [f.name for f in os.scandir(opt.output_dir) if f.name.startswith("best")]
             if len(best_files) > 0:
                 print(f"Found {len(best_files)} best checkpoints, evaluating the last one.")
-                model.load_state_dict(torch.load(os.path.join(opt.output_dir, best_files[-1]))["model"])
+                model.load_state_dict(torch.load(os.path.join(opt.output_dir, best_files[-1])))  #["model"])
                 model.eval()
             else:
                 print(f"Found 0 thresh_best checkpoints, reporting final metric")
@@ -689,6 +675,12 @@ def init_exp(args=None):
                         help="Regularization coefficient for graph connectivity between z^t and z^{<t}")
     parser.add_argument("--gc_reg_coeff", type=float, default=0.0,
                         help="Regularization coeff for graph connectivity between z^t and c")
+    parser.add_argument("--g_constraint", type=float, default=0.0,
+                        help="Constrain G^z to have no more than this number of edges")
+    parser.add_argument("--gc_constraint", type=float, default=0.0,
+                        help="Constrain G^a to have no more than this number of edges")
+    parser.add_argument("--dual_restarts", action="store_true",
+                        help="When doing constrained optim, restarts the dual value to zero as soon as the constraint is satisfied")
     parser.add_argument("--drawhard", action="store_true",
                         help="Instead of using soft samples in gumbel sigmoid, use hard samples in forward.")
     parser.add_argument("--gumbel_temperature", type=float, default=1.0,

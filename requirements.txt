@@ -93,3 +93,4 @@ wrapt==1.12.1
 wurlitzer==2.0.1
 zipp==3.4.0
 qj==0.2.0
+git+https://github.com/cooper-org/cooper.git
