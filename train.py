@@ -143,11 +143,18 @@ def main(opt):
     ## ---- Model ---- ##
     model = build_model(opt, device, image_shape, cont_c_dim, disc_c_dim, disc_c_n_values)
 
-    if opt.set_constraint_to_gt:
-        if hasattr(train_dataset, "gt_g"):
+    if hasattr(train_dataset, "gt_g"):
+        max_e_g = train_dataset.gt_g.shape[0] * train_dataset.gt_g.shape[1]
+        if opt.set_constraint_to_gt:
             opt.g_constraint = train_dataset.gt_g.sum().item()
-        if hasattr(train_dataset, "gt_gc"):
+    else:
+        max_e_g = 0
+    if hasattr(train_dataset, "gt_gc"):
+        max_e_gc = train_dataset.gt_gc.shape[0] * train_dataset.gt_gc.shape[1]
+        if opt.set_constraint_to_gt:
             opt.gc_constraint = train_dataset.gt_gc.sum().item()
+    else:
+        max_e_gc = 0
 
     ## ---- Optimization ---- ##
     # setting scaling constants for regularization:
@@ -158,7 +165,8 @@ def main(opt):
         opt.lr_dual = opt.lr
 
     is_constrained = (opt.g_constraint > 0. or opt.gc_constraint > 0.)
-    cmp = CustomCMP(opt.g_reg_coeff, opt.gc_reg_coeff, opt.g_constraint, opt.gc_constraint, g_scaling, gc_scaling)
+    cmp = CustomCMP(opt.g_reg_coeff, opt.gc_reg_coeff, opt.g_constraint, opt.gc_constraint, g_scaling, gc_scaling,
+                    linear_schedule=(opt.constraint_schedule is not None), max_g=max_e_g, max_gc=max_e_gc)
     formulation = cooper.LagrangianFormulation(cmp)
 
     if opt.no_adam_gumbel:
@@ -289,6 +297,13 @@ def main(opt):
 
     # makes the code stop if nans are encountered
     trainer.add_event_handler(Events.ITERATION_COMPLETED, TerminateOnNan())
+
+    # schedule constraint
+    if opt.constraint_schedule is not None:
+        assert opt.frozen_masks_period == 0
+        @trainer.on(Events.ITERATION_COMPLETED)
+        def update_constraint(engine):
+            cmp.update_constraint(engine.state.iteration, opt.constraint_schedule)
 
     # Log GPU info
     if device != "cpu":
@@ -794,6 +809,8 @@ def init_exp(args=None):
                         help="When doing constrained optim, restarts the dual value to zero as soon as the constraint is satisfied")
     parser.add_argument("--frozen_masks_period", type=int, default=0,
                         help="Number of iterations we keep masks frozen")
+    parser.add_argument("--constraint_schedule", type=int, default=None,
+                        help="When specified, the upper bound on number of edges will linearly decrease taking this number of iterations.")
     parser.add_argument("--max_grad_clip", type=float, default=0,
                         help="Max gradient value (clip above - for off)")
     parser.add_argument("--max_grad_norm", type=float, default=0,
