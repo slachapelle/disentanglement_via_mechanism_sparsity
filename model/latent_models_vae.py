@@ -4,14 +4,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .gumbel_masks import GumbelSigmoid
+from .gumbel_masks import GumbelSigmoid, LouizosGumbelSigmoid
 from .nn import MLP, ParallelMLP, ParallelLinear
 
 class LatentModel(nn.Module):
     def __init__(self, z_max_dim, cont_c_dim, disc_c_dim, disc_c_n_values, network_arch, n_lag=1, freeze_m=False,
-                 freeze_g=False, freeze_gc=False, freeze_dummies=False, gumbel_threshold=None, no_gumbel=False,
-                 no_drawhard=False, dim_suff_stat=None, output_delta=False, delta_factor=1.,
-                 n_layers=0., hid_dim=10, bn=False, gumbel_temperature=1.):
+                 freeze_g=False, freeze_gc=False, freeze_dummies=False, no_drawhard=False, dim_suff_stat=None,
+                 output_delta=False, delta_factor=1., n_layers=0., hid_dim=10, bn=False, gumbel_temperature=1.,
+                 louizos_gumbel=False, one_gumbel_sample=False):
         """
         Base class for transitions model in the latent space.
         y = (z, noise) with z called the semantical latent variable.
@@ -51,13 +51,21 @@ class LatentModel(nn.Module):
         self.dummy_param = nn.Parameter(torch.empty(0))
 
         # mask for semantical latent variables
-        self.m = GumbelSigmoid((self.num_z_blocks,), freeze=freeze_m, drawhard=(not no_drawhard), tau=gumbel_temperature)
+        if louizos_gumbel:
+            self.m = LouizosGumbelSigmoid((self.num_z_blocks,), freeze=freeze_m, tau=gumbel_temperature)
+        else:
+            self.m = GumbelSigmoid((self.num_z_blocks,), freeze=freeze_m, drawhard=(not no_drawhard),
+                                   tau=gumbel_temperature, one_gumbel_sample=one_gumbel_sample)
         if freeze_m:
             self.m.log_alpha.requires_grad = False
 
         # mask for connections between z^t and z^{<t}
         if self.n_lag > 0:
-            self.g = GumbelSigmoid((self.num_z_blocks, self.num_z_blocks), freeze=freeze_g, drawhard=(not no_drawhard), tau=gumbel_temperature)  # g_ij = 1 iff i <- j
+            if louizos_gumbel:
+                self.g = LouizosGumbelSigmoid((self.num_z_blocks, self.num_z_blocks), freeze=freeze_g, tau=gumbel_temperature)  # g_ij = 1 iff i <- j
+            else:
+                self.g = GumbelSigmoid((self.num_z_blocks, self.num_z_blocks), freeze=freeze_g, drawhard=(not no_drawhard),
+                                       tau=gumbel_temperature, one_gumbel_sample=one_gumbel_sample)  # g_ij = 1 iff i <- j
             if freeze_g:
                 self.g.log_alpha.requires_grad = False
 
@@ -68,7 +76,11 @@ class LatentModel(nn.Module):
 
         # mask for connections between c^{t-1} and z^t
         if self.cont_c_dim > 0:
-            self.gc = GumbelSigmoid((self.num_z_blocks, self.cont_c_dim), freeze=freeze_gc, drawhard=(not no_drawhard), tau=gumbel_temperature)  # gc_ij = 1 iff i <- j
+            if louizos_gumbel:
+                self.gc = LouizosGumbelSigmoid((self.num_z_blocks, self.cont_c_dim), freeze=freeze_gc, tau=gumbel_temperature)  # gc_ij = 1 iff i <- j
+            else:
+                self.gc = GumbelSigmoid((self.num_z_blocks, self.cont_c_dim), freeze=freeze_gc, drawhard=(not no_drawhard),
+                                        tau=gumbel_temperature, one_gumbel_sample=one_gumbel_sample)  # gc_ij = 1 iff i <- j
             if freeze_gc:
                 self.gc.log_alpha.requires_grad = False
 
@@ -84,10 +96,11 @@ class LatentModel(nn.Module):
             self.register_buffer("cumprod",
                                  torch.Tensor(np.cumprod([1] + self.disc_c_n_values))[:-1].unsqueeze(0).long(),
                                  persistent=False)  # do not save the this buffer
-            if no_gumbel:
-                self.gc_disc = MaskSigmoid((self.num_z_blocks, self.disc_c_dim), freeze=freeze_gc, drawhard=(not no_drawhard), tau=gumbel_temperature)  # gc_ij = 1 iff i <- j
-            elif gumbel_threshold is None:
-                self.gc_disc = GumbelSigmoid((self.num_z_blocks, self.disc_c_dim), freeze=freeze_gc, drawhard=(not no_drawhard), tau=gumbel_temperature)  # gc_ij = 1 iff i <- j
+            if louizos_gumbel:
+                self.gc_disc = LouizosGumbelSigmoid((self.num_z_blocks, self.disc_c_dim), freeze=freeze_gc, tau=gumbel_temperature)  # gc_ij = 1 iff i <- j
+            else:
+                self.gc_disc = GumbelSigmoid((self.num_z_blocks, self.disc_c_dim), freeze=freeze_gc, drawhard=(not no_drawhard),
+                                             tau=gumbel_temperature, one_gumbel_sample=one_gumbel_sample)  # gc_ij = 1 iff i <- j
 
             # dummy parameter which replaces masked out gc_i's in the transition network input
             self.gamma_gc_disc = torch.nn.Parameter(torch.zeros((1, self.num_z_blocks, self.one_hot_dim)))
@@ -317,7 +330,8 @@ class LatentModel(nn.Module):
 class FCGaussianLatentModel(LatentModel):
     def __init__(self, z_max_dim, cont_c_dim, disc_c_dim, disc_c_n_values, network_arch, n_lag=1, n_layers=0,
                  hid_dim=5, freeze_m=False, freeze_g=False, freeze_gc=False, freeze_dummies=False, no_drawhard=False,
-                 output_delta=True, delta_factor=1., var_p_mode="dependent", bn=False, gumbel_temperature=1.0):
+                 output_delta=True, delta_factor=1., var_p_mode="dependent", bn=False, gumbel_temperature=1.0,
+                 louizos_gumbel=False, one_gumbel_sample=False):
         """
         Gaussian model with mean and std given by fully connected neural network.
         :param z_max_dim: dimensionality of z is learned, this is the maximal dimension
@@ -332,7 +346,8 @@ class FCGaussianLatentModel(LatentModel):
                                                     freeze_m=freeze_m, freeze_g=freeze_g, freeze_gc=freeze_gc, freeze_dummies=freeze_dummies,
                                                     no_drawhard=no_drawhard, output_delta=output_delta, delta_factor=delta_factor,
                                                     dim_suff_stat=2, n_layers=n_layers, hid_dim=hid_dim, bn=bn,
-                                                    gumbel_temperature=gumbel_temperature)
+                                                    gumbel_temperature=gumbel_temperature, louizos_gumbel=louizos_gumbel,
+                                                    one_gumbel_sample=one_gumbel_sample)
         self.var_p_mode = var_p_mode
 
         assert self.n_lag > 0 or self.cont_c_dim > 0 or self.disc_c_dim > 0, "Should use another model..."

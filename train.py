@@ -91,8 +91,10 @@ def build_model(opt, device, image_shape, cont_c_dim, disc_c_dim, disc_c_n_value
                                          freeze_gc=opt.freeze_gc,
                                          freeze_dummies=opt.freeze_dummies,
                                          no_drawhard=opt.no_drawhard,
+                                         one_gumbel_sample=opt.one_gumbel_sample,
                                          var_p_mode=opt.var_p_mode, bn=opt.bn_transition_net,
-                                         gumbel_temperature=opt.gumbel_temperature)
+                                         gumbel_temperature=opt.gumbel_temperature,
+                                         louizos_gumbel=opt.louizos_gumbel)
 
     model = ILCM_VAE(latent_model, image_shape, cont_c_dim, disc_c_dim, disc_c_n_values, opt)
     model.to(device)
@@ -343,29 +345,29 @@ def main(opt):
     trainer.add_event_handler(Events.TERMINATE, terminate_checkpoint_handler)
 
     # score we look at for declaring best model
-    def score_function(engine):
-        """Validation score"""
+    #def score_function(engine):
+    #    """Validation score"""
 
-        score = - engine.state.metrics["nll_valid"]
+    #    score = - engine.state.metrics["nll_valid"]
 
-        best_checkpoint_handler.filename_prefix = "best"
+    #    best_checkpoint_handler.filename_prefix = "best"
 
-        if opt.best_criterion == "loss":
-            with torch.no_grad():
-                g_reg = model.latent_model.g_regularizer().item()
-                gc_reg = model.latent_model.gc_regularizer().item()
-            score -= opt.g_reg_coeff * g_reg * g_scaling
-            score -= opt.gc_reg_coeff * gc_reg * gc_scaling
+    #    if opt.best_criterion == "loss":
+    #        with torch.no_grad():
+    #            g_reg = model.latent_model.g_regularizer().item()
+    #            gc_reg = model.latent_model.gc_regularizer().item()
+    #        score -= opt.g_reg_coeff * g_reg * g_scaling
+    #        score -= opt.gc_reg_coeff * gc_reg * gc_scaling
 
-        return score
+    #    return score
 
     # saving if the score improved before thresholding
-    best_checkpoint_handler = Checkpoint(to_save, DiskSaver(opt.output_dir, create_dir=True), n_saved=1,
-                                         filename_prefix="best",
-                                         score_function=score_function,
-                                         score_name=opt.best_criterion + "_valid",
-                                         greater_or_equal=False)
-    evaluator.add_event_handler(Events.COMPLETED, best_checkpoint_handler)
+    #best_checkpoint_handler = Checkpoint(to_save, DiskSaver(opt.output_dir, create_dir=True), n_saved=1,
+    #                                     filename_prefix="best",
+    #                                     score_function=score_function,
+    #                                     score_name=opt.best_criterion + "_valid",
+    #                                     greater_or_equal=False)
+    #evaluator.add_event_handler(Events.COMPLETED, best_checkpoint_handler)
 
     ## ---- Timing ---- ##
     timer_avg_iter = Timer(average=True)
@@ -394,6 +396,13 @@ def main(opt):
     # TimeLimit
     if opt.time_limit is not None:
         trainer.add_event_handler(Events.ITERATION_COMPLETED, TimeLimit(int(opt.time_limit * 60 * 60)))
+
+    # iter_limit
+    if opt.iter_limit is not None:
+        @trainer.on(Events.ITERATION_COMPLETED)
+        def check_iter_limit(engine):
+            if engine.state.iteration >= opt.iter_limit:
+                engine.terminate()
 
     ## ---- Plotting ---- ##
     @trainer.on(Events.ITERATION_COMPLETED(every=opt.plot_period))
@@ -548,18 +557,18 @@ def main(opt):
         metrics.update(evaluator.state.metrics["all"])
 
         # best metrics
-        g_reg = opt.g_reg_coeff * g_scaling * model.latent_model.g_regularizer().item()
-        gc_reg = opt.gc_reg_coeff * gc_scaling * model.latent_model.gc_regularizer().item()
-        total_reg =  g_reg + gc_reg
+        #g_reg = opt.g_reg_coeff * g_scaling * model.latent_model.g_regularizer().item()
+        #gc_reg = opt.gc_reg_coeff * gc_scaling * model.latent_model.gc_regularizer().item()
+        #total_reg =  g_reg + gc_reg
 
-        best_score = best_checkpoint_handler._saved[-1].priority
+        #best_score = best_checkpoint_handler._saved[-1].priority
 
-        if opt.best_criterion == "loss":
-            metrics["best_loss_valid"] = - best_score
-            metrics["best_nll_valid"] = - best_score - total_reg
-        if opt.best_criterion == "nll":
-            metrics["best_loss_valid"] = - best_score + total_reg
-            metrics["best_nll_valid"] = - best_score
+        #if opt.best_criterion == "loss":
+        #    metrics["best_loss_valid"] = - best_score
+        #    metrics["best_nll_valid"] = - best_score - total_reg
+        #if opt.best_criterion == "nll":
+        #    metrics["best_loss_valid"] = - best_score + total_reg
+        #    metrics["best_nll_valid"] = - best_score
 
         # LR scheduling
         #if opt.scheduler == "reduce_on_plateau":
@@ -597,18 +606,18 @@ def main(opt):
             metrics[key + "_final"] = metrics.pop(key)
 
         # best metrics
-        g_reg = opt.g_reg_coeff * g_scaling * model.latent_model.g_regularizer().item()
-        gc_reg = opt.gc_reg_coeff * gc_scaling * model.latent_model.gc_regularizer().item()
-        total_reg = g_reg + gc_reg
+        #g_reg = opt.g_reg_coeff * g_scaling * model.latent_model.g_regularizer().item()
+        #gc_reg = opt.gc_reg_coeff * gc_scaling * model.latent_model.gc_regularizer().item()
+        #total_reg = g_reg + gc_reg
 
-        best_score = best_checkpoint_handler._saved[-1].priority
+        #best_score = best_checkpoint_handler._saved[-1].priority
 
-        if opt.best_criterion == "loss":
-            metrics["best_loss_valid"] = - best_score
-            metrics["best_nll_valid"] = - best_score - total_reg
-        if opt.best_criterion == "nll":
-            metrics["best_loss_valid"] = - best_score + total_reg
-            metrics["best_nll_valid"] = - best_score
+        #if opt.best_criterion == "loss":
+        #    metrics["best_loss_valid"] = - best_score
+        #    metrics["best_nll_valid"] = - best_score - total_reg
+        #if opt.best_criterion == "nll":
+        #    metrics["best_loss_valid"] = - best_score + total_reg
+        #    metrics["best_nll_valid"] = - best_score
 
         # timers
         metrics["time_avg_iter"] = timer_avg_iter.value()
@@ -626,21 +635,21 @@ def main(opt):
             metrics["r_final"] = r
 
             # Evaluate linear_score and MCC on best models after thresholding
-            best_files = [f.name for f in os.scandir(opt.output_dir) if f.name.startswith("best")]
-            if len(best_files) > 0:
-                print(f"Found {len(best_files)} best checkpoints, evaluating the last one.")
-                model.load_state_dict(torch.load(os.path.join(opt.output_dir, best_files[-1])))  #["model"])
-                model.eval()
-            else:
-                print(f"Found 0 thresh_best checkpoints, reporting final metric")
-            mcc, consistent_r, r, cc, C_hat, C_pattern, perm_mat, z, z_hat = evaluate_disentanglement(model, test_loader, device, opt)
-            metrics["mean_corr_coef_best"] = mcc
-            metrics["consistent_r_best"] = consistent_r
-            metrics["r_best"] = r
+            #best_files = [f.name for f in os.scandir(opt.output_dir) if f.name.startswith("best")]
+            #if len(best_files) > 0:
+            #    print(f"Found {len(best_files)} best checkpoints, evaluating the last one.")
+            #    model.load_state_dict(torch.load(os.path.join(opt.output_dir, best_files[-1])))  #["model"])
+            #    model.eval()
+            #else:
+            #    print(f"Found 0 thresh_best checkpoints, reporting final metric")
+            #mcc, consistent_r, r, cc, C_hat, C_pattern, perm_mat, z, z_hat = evaluate_disentanglement(model, test_loader, device, opt)
+            #metrics["mean_corr_coef_best"] = mcc
+            #metrics["consistent_r_best"] = consistent_r
+            #metrics["r_best"] = r
 
             # save both ground_truth and learned latents
-            np.save(os.path.join(opt.output_dir, "z_hat_best.npy"), z_hat)
-            np.save(os.path.join(opt.output_dir, "z_gt_best.npy"), z)
+            np.save(os.path.join(opt.output_dir, "z_hat_final.npy"), z_hat)
+            np.save(os.path.join(opt.output_dir, "z_gt_final.npy"), z)
         else:
             perm_mat = np.eye(opt.z_max_dim)
 
@@ -682,7 +691,7 @@ def init_exp(args=None):
                         help="ground truth dimensionality of x (for MANIFOLD == 'nn')")
     parser.add_argument("--rand_g_density", type=float, default=None,
                         help="Probability of sampling an edge. When None, the graph is set to a default (or to gt_graph_name).")
-    parser.add_argument("--gt_graph_name", type=str, default=None, choices=["graph_action_1", "graph_action_2", "graph_temporal_1", "graph_temporal_2"],
+    parser.add_argument("--gt_graph_name", type=str, default=None,
                         help="Name of the ground-truth graph to use in synthetic data.")
     parser.add_argument("--num_samples", type=int, default=int(1e6),
                         help="num_samples for synthetic datasets")
@@ -708,6 +717,8 @@ def init_exp(args=None):
                         help="number of epochs to train for")
     parser.add_argument("--time_limit", type=float, default=None,
                         help="After this amount of time, terminate training.")
+    parser.add_argument("--iter_limit", type=int, default=None,
+                        help="After this amount of iteration, terminate training.")
 
     # identifiable latent causal model (ILCM)
     parser.add_argument("--network_arch", type=str, default="MLP",
@@ -737,8 +748,12 @@ def init_exp(args=None):
                         help="Will set the maximal number of edges to the number of edges in the ground-truth.")
     parser.add_argument("--drawhard", action="store_true",
                         help="Instead of using soft samples in gumbel sigmoid, use hard samples in forward.")
+    parser.add_argument("--one_gumbel_sample", action="store_true",
+                        help="Use only one sample of the gumbel masks per minibatch.")
     parser.add_argument("--gumbel_temperature", type=float, default=1.0,
                         help="Controls the temperature in the gumbel-sigmoid masks.")
+    parser.add_argument("--louizos_gumbel", action="store_true",
+                        help="Use thresholded gumbel sigmoid from Louizos et al. (2018)")
     parser.add_argument("--freeze_m", action="store_true",
                         help="Do not learn m")
     parser.add_argument("--freeze_g", action="store_true",

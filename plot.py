@@ -37,7 +37,8 @@ def plot_matrix(matrix, title="", row_label="", col_label="", col_to_mark=[], ro
     return fig
 
 def plot_weighted_adjacency_vs_steps(weighted_adjacency, gt_adjacency, iterations=None):
-    num_vars = weighted_adjacency.shape[1]
+    num_row = weighted_adjacency.shape[1]
+    num_col = weighted_adjacency.shape[2]
     if iterations is None:
         iterations = range(weighted_adjacency.shape[0])
     assert weighted_adjacency.shape[0] == len(iterations)
@@ -45,8 +46,8 @@ def plot_weighted_adjacency_vs_steps(weighted_adjacency, gt_adjacency, iteration
     fig, ax1 = plt.subplots()
 
     # Plot weight of incorrect edges
-    for i in range(num_vars):
-        for j in range(num_vars):
+    for i in range(num_row):
+        for j in range(num_col):
             if gt_adjacency[i, j] == 1:
                 color = 'g'  # correct edge
             else:
