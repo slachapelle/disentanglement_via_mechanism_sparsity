@@ -21,11 +21,11 @@ class CustomCMP(cooper.ConstrainedMinimizationProblem):
         self.gc_constraint = gc_constraint
 
         if linear_schedule:
-            self.g_effective_constraint = max_g
-            self.gc_effective_constraint = max_gc
+            self.current_g_constraint = max_g
+            self.current_gc_constraint = max_gc
         else:
-            self.g_effective_constraint = g_constraint
-            self.gc_effective_constraint = gc_constraint
+            self.current_g_constraint = g_constraint
+            self.current_gc_constraint = gc_constraint
 
         self.max_g, self.max_gc = max_g, max_gc
 
@@ -71,23 +71,28 @@ class CustomCMP(cooper.ConstrainedMinimizationProblem):
         else:
             defects = []
             if self.g_constraint > 0:
-                defects.append(g_reg - self.g_effective_constraint)
+                defects.append(g_reg - self.current_g_constraint)
             if self.gc_constraint > 0:
-                defects.append(gc_reg - self.gc_effective_constraint)
+                defects.append(gc_reg - self.current_gc_constraint)
 
             defects = torch.stack(defects)
 
             return cooper.CMPState(loss=loss, ineq_defect=defects, eq_defect=None, misc=misc)
 
-    def update_constraint(self, iter, total_iter):
-        if iter <= total_iter:
+    def update_constraint(self, iter, total_iter, no_update_period=0):
+        if iter <= no_update_period:
             if self.g_constraint > 0:
-                self.g_effective_constraint = (self.max_g - self.g_constraint) * (1 - iter / total_iter) + self.g_constraint
+                self.current_g_constraint = self.max_g
             if self.gc_constraint > 0:
-                self.gc_effective_constraint = (self.max_gc - self.gc_constraint) * (1 - iter / total_iter) + self.gc_constraint
+                self.current_gc_constraint = self.max_gc
+        if no_update_period <= iter <= no_update_period + total_iter:
+            if self.g_constraint > 0:
+                self.current_g_constraint = (self.max_g - self.g_constraint) * (1 - iter / total_iter) + self.g_constraint
+            if self.gc_constraint > 0:
+                self.current_gc_constraint = (self.max_gc - self.gc_constraint) * (1 - iter / total_iter) + self.gc_constraint
         else:
             if self.g_constraint > 0:
-                self.g_effective_constraint = self.g_constraint
+                self.current_g_constraint = self.g_constraint
             if self.gc_constraint > 0:
-                self.gc_effective_constraint = self.gc_constraint
+                self.current_gc_constraint = self.gc_constraint
 

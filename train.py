@@ -300,10 +300,9 @@ def main(opt):
 
     # schedule constraint
     if opt.constraint_schedule is not None:
-        assert opt.frozen_masks_period == 0
         @trainer.on(Events.ITERATION_COMPLETED)
         def update_constraint(engine):
-            cmp.update_constraint(engine.state.iteration, opt.constraint_schedule)
+            cmp.update_constraint(engine.state.iteration, opt.constraint_schedule, opt.frozen_masks_period)
 
     # Log GPU info
     if device != "cpu":
