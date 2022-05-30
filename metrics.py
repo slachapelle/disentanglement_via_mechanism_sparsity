@@ -102,7 +102,8 @@ def get_z_z_hat(model, data_loader, device, num_samples=int(1e5), opt=None):
         sample_counter = 0
         for batch in data_loader:
             obs, cont_c, disc_c, _, z = batch
-            obs, z = obs[:, -1].to(device), z[:, -1].to(device)
+            #obs, z = obs[:, -1].to(device), z[:, -1].to(device)
+            obs, z = obs[:, 0].to(device), z[:, 0].to(device)  # using first sample instead of last one.
 
             if opt.mode in ["vae", "random_vae", "supervised_vae"]:
                 if model.latent_model.z_block_size != 1:
@@ -127,6 +128,7 @@ def get_z_z_hat(model, data_loader, device, num_samples=int(1e5), opt=None):
             z_list.append(z)
             z_hat_list.append(z_hat)
             sample_counter += obs.shape[0]
+            assert z.shape[0] == z_hat.shape[0] and z.shape[0] == obs.shape[0]
             if sample_counter >= num_samples:
                 break
         # if num_samples is greater than number of examples in dataset
@@ -158,7 +160,7 @@ def mean_corr_coef_np(z, z_hat, method='pearson', indices=None):
     x, y = z, z_hat
     d = x.shape[1]
     if method == 'pearson':
-        cc = np.corrcoef(x, y, rowvar=False)[:d, d:]
+        cc = np.corrcoef(x, y, rowvar=False)[:d, d:]  # z x z_hat
     elif method == 'spearman':
         cc = spearmanr(x, y)[0][:d, d:]
     else:
@@ -199,14 +201,24 @@ def test_consistency(z, z_hat, assignments, dataset):
 
     L_pattern = np.matmul(C, perm_mat)
 
-    r = 0
+    consistent_r = 0
     for i in range(z.shape[1]):
         masked_z_hat = z_hat * L_pattern[i, :]
         reg = LinearRegression(fit_intercept=True).fit(masked_z_hat, z[:, i])
-        r += np.sqrt(reg.score(masked_z_hat, z[:, i]))  # the sqrt of R^2 is called the "coefficient of multiple correlation".
-    r /= z.shape[1]
+        consistent_r += np.sqrt(reg.score(masked_z_hat, z[:, i]))  # the sqrt of R^2 is called the "coefficient of multiple correlation".
+    consistent_r /= z.shape[1]
 
-    return r, C
+    # same as above, but with transposed C
+    L_pattern_ = np.matmul(C.T, perm_mat)
+
+    transposed_consistent_r = 0
+    for i in range(z.shape[1]):
+        masked_z_hat = z_hat * L_pattern_[i, :]
+        reg = LinearRegression(fit_intercept=True).fit(masked_z_hat, z[:, i])
+        transposed_consistent_r += np.sqrt(reg.score(masked_z_hat, z[:, i]))  # the sqrt of R^2 is called the "coefficient of multiple correlation".
+    transposed_consistent_r /= z.shape[1]
+
+    return consistent_r, transposed_consistent_r, C
 
 
 def get_linear_score(x, y):
@@ -251,12 +263,14 @@ def shd(target, pred):
 def evaluate_disentanglement(model, data_loader, device, opt):
     z, z_hat = get_z_z_hat(model, data_loader, device, opt=opt)
     mcc, cc, assignments = mean_corr_coef_np(z, z_hat)
-    consistent_r, C_pattern = test_consistency(z, z_hat, assignments, data_loader.dataset)
+    consistent_r, transposed_consistent_r, C_pattern = test_consistency(z, z_hat, assignments, data_loader.dataset)
     r, _, L_hat = linear_regression_metric(z, z_hat)
 
     perm_mat = np.zeros_like(L_hat)
     perm_mat[assignments] = 1  # perm_mat is P^T in paper
     C_hat = np.matmul(L_hat, perm_mat.T)
 
-    return mcc, consistent_r, r, cc, C_hat, C_pattern, perm_mat, z, z_hat
+    #np.set_printoptions(formatter={'float': lambda x: "{0:0.3f}".format(x)})
+    #print(np.corrcoef(z, rowvar=False))
+    return mcc, consistent_r, r, cc, C_hat, C_pattern, perm_mat, z, z_hat, transposed_consistent_r
 

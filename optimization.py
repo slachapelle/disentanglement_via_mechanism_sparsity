@@ -13,14 +13,14 @@ def compute_nll(log_likelihood, valid, opt):
 
 
 class CustomCMP(cooper.ConstrainedMinimizationProblem):
-    def __init__(self, g_reg_coeff=0., gc_reg_coeff=0., g_constraint=0, gc_constraint=0., g_scaling=1., gc_scaling=1., linear_schedule=False, max_g=0, max_gc=0):
+    def __init__(self, g_reg_coeff=0., gc_reg_coeff=0., g_constraint=0, gc_constraint=0., g_scaling=1., gc_scaling=1., schedule=False, max_g=0, max_gc=0):
         self.is_constrained = (g_constraint > 0. or gc_constraint > 0.)
         self.g_reg_coeff = g_reg_coeff
         self.gc_reg_coeff = gc_reg_coeff
         self.g_constraint = g_constraint
         self.gc_constraint = gc_constraint
 
-        if linear_schedule:
+        if schedule:
             self.current_g_constraint = max_g
             self.current_gc_constraint = max_gc
         else:
@@ -85,7 +85,7 @@ class CustomCMP(cooper.ConstrainedMinimizationProblem):
                 self.current_g_constraint = self.max_g
             if self.gc_constraint > 0:
                 self.current_gc_constraint = self.max_gc
-        if no_update_period <= iter <= no_update_period + total_iter:
+        elif no_update_period < iter <= no_update_period + total_iter:
             if self.g_constraint > 0:
                 self.current_g_constraint = (self.max_g - self.g_constraint) * (1 - iter / total_iter) + self.g_constraint
             if self.gc_constraint > 0:
@@ -95,4 +95,16 @@ class CustomCMP(cooper.ConstrainedMinimizationProblem):
                 self.current_g_constraint = self.g_constraint
             if self.gc_constraint > 0:
                 self.current_gc_constraint = self.gc_constraint
+
+    def update_constraint_adaptive(self, iter, no_update_period=0):
+        if iter <= no_update_period:
+            if self.g_constraint > 0:
+                self.current_g_constraint = self.max_g
+            if self.gc_constraint > 0:
+                self.current_gc_constraint = self.max_gc
+        else:
+            if self.g_constraint > 0 and self.state.ineq_defect.sum() <= 0:
+                self.current_g_constraint = max(self.current_g_constraint - 1, self.g_constraint)
+            if self.gc_constraint > 0 and self.state.ineq_defect.sum() <= 0:
+                self.current_gc_constraint = max(self.current_gc_constraint - 1, self.gc_constraint)
 

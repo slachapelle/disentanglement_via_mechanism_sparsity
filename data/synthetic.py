@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
-from scipy.linalg import block_diag
+from scipy.linalg import block_diag, norm
 
 
 def get_decoder(manifold, x_dim, z_dim, rng_data_gen):
@@ -86,7 +86,7 @@ class ActionToyManifoldDataset(torch.utils.data.Dataset):
         self.num_samples = num_samples
         self.no_norm = no_norm
         if gt_gc is not None:
-            assert self.transition_model == "action_sparsity_non_trivial"
+            assert self.transition_model.startswith("action_sparsity_non_trivial")
 
         if self.transition_model == "action_sparsity_trivial":
             assert self.c_dim == self.z_dim
@@ -103,8 +103,34 @@ class ActionToyManifoldDataset(torch.utils.data.Dataset):
                 gt_gc = np.concatenate([np.eye(self.z_dim), np.eye(self.z_dim)[:, 0:1]], 1)[:, 1:] + np.eye(self.z_dim)
             shift = np.repeat(np.arange(0, self.z_dim)[:, None], self.c_dim, 1)
 
-            def get_mean_var(c, var_fac=0.0001):
+            def get_mean_var(c,  var_fac=0.0001):  #var_fac=0.1**2):  #var_fac=0.5**2):
                 mu_tp1 = np.sum(gt_gc * np.sin(c[:, None, :] * mat_range + shift), 2)
+                var_tp1 = var_fac * np.ones_like(mu_tp1)
+                return mu_tp1, var_tp1
+
+            self.gt_gc = torch.Tensor(gt_gc)
+
+        elif self.transition_model == "action_sparsity_non_trivial_sigmoid":
+            if gt_gc is None:
+                assert self.c_dim == self.z_dim
+                gt_gc = np.concatenate([np.eye(self.z_dim), np.eye(self.z_dim)[:, 0:1]], 1)[:, 1:] + np.eye(self.z_dim)
+            shift = np.linspace(-2, 2, self.z_dim)
+
+            def get_mean_var(c,  var_fac=0.0001):  #var_fac=0.1**2):  #var_fac=0.5**2):
+                mu_tp1 = np.sum(gt_gc * (1 / (1 + np.exp(-4 * (c[:, None, :] - shift[:, None])))), 2)
+                var_tp1 = var_fac * np.ones_like(mu_tp1)
+                return mu_tp1, var_tp1
+
+            self.gt_gc = torch.Tensor(gt_gc)
+
+        elif self.transition_model == "action_sparsity_non_trivial_norm":
+            if gt_gc is None:
+                assert self.c_dim == self.z_dim
+                gt_gc = np.concatenate([np.eye(self.z_dim), np.eye(self.z_dim)[:, 0:1]], 1)[:, 1:] + np.eye(self.z_dim)
+            shift = self.rng_data_gen.normal(size=(self.z_dim , self.c_dim))
+
+            def get_mean_var(c,  var_fac=0.0001):  #var_fac=0.1**2):  #var_fac=0.5**2):
+                mu_tp1 = norm(gt_gc * (c[:, None, :] - shift), axis=2)
                 var_tp1 = var_fac * np.ones_like(mu_tp1)
                 return mu_tp1, var_tp1
 
@@ -135,6 +161,19 @@ class ActionToyManifoldDataset(torch.utils.data.Dataset):
                 return mu_tp1, var_tp1
 
             self.gt_gc = torch.Tensor(gt_gc)
+        elif self.transition_model == "action_sparsity_2d":
+            assert self.z_dim == 2
+            assert self.c_dim == 2
+
+            def get_mean_var(c, var_fac=0.0001):  #var_fac=0.5**2):
+                z_1 = 0.5 * c[:, 0:1] ** 2
+                z_2 = 0.5 * c[:, 0:1] ** 3 + 0.5 * c[:, 1:2] ** 2
+                mu_tp1 = np.concatenate([z_1, z_2], 1)
+                var_tp1 = var_fac * np.ones_like(mu_tp1)
+                return mu_tp1, var_tp1
+
+            self.gt_gc = torch.Tensor(np.array([[1, 0],
+                                                [1, 1]]))
         else:
             raise NotImplementedError(f"The transition model {self.transition_model} is not implemented.")
 
@@ -170,7 +209,6 @@ class ActionToyManifoldDataset(torch.utils.data.Dataset):
         disc_c = torch.Tensor(np.array([0.])).long()
         valid = True
         other = self.z[item: item + 1]  # must have a dimension for time (of size 1 since no temporal dependencies)
-
         return obs, cont_c, disc_c, valid, other
 
 
@@ -186,7 +224,7 @@ class TemporalToyManifoldDataset(torch.utils.data.Dataset):
         self.num_samples = num_samples
         self.no_norm = no_norm
         if gt_g is not None:
-            assert self.transition_model == "temporal_sparsity_non_trivial"
+            assert self.transition_model.startswith("temporal_sparsity_non_trivial")
             assert (np.diag(gt_g) == 1).all()
 
         if self.transition_model == "temporal_sparsity_trivial":
@@ -205,6 +243,32 @@ class TemporalToyManifoldDataset(torch.utils.data.Dataset):
 
             def get_mean_var(z_t, lr=0.5, var_fac=0.0001):
                 delta = np.sum(gt_g * np.sin(z_t[:, None, :] * mat_range + shift), 2)
+                mu_tp1 = z_t + lr * delta
+                var_tp1 = var_fac * np.ones_like(mu_tp1)
+                return mu_tp1, var_tp1
+
+            self.gt_g = torch.Tensor(gt_g)
+
+        elif self.transition_model == "temporal_sparsity_non_trivial_sigmoid":
+            if gt_g is None:
+                gt_g = np.tril(np.ones((self.z_dim, self.z_dim)))
+            shift = np.linspace(-2, 2, self.z_dim)
+
+            def get_mean_var(z_t, lr=0.5, var_fac=0.0001):
+                delta = np.sum(gt_g * (1 / (1 + np.exp(-4 * (z_t[:, None, :] - shift[:, None])))), 2)
+                mu_tp1 = z_t + lr * delta
+                var_tp1 = var_fac * np.ones_like(mu_tp1)
+                return mu_tp1, var_tp1
+
+            self.gt_g = torch.Tensor(gt_g)
+
+        elif self.transition_model == "temporal_sparsity_non_trivial_norm":
+            if gt_g is None:
+                gt_g = np.tril(np.ones((self.z_dim, self.z_dim)))
+            shift = self.rng_data_gen.normal(size=(self.z_dim , self.z_dim))
+
+            def get_mean_var(z_t, lr=0.5, var_fac=0.0001):  #var_fac=0.1**2):  #var_fac=0.5**2):
+                delta = norm(gt_g * (z_t[:, None, :] - shift), axis=2)
                 mu_tp1 = z_t + lr * delta
                 var_tp1 = var_fac * np.ones_like(mu_tp1)
                 return mu_tp1, var_tp1
@@ -290,11 +354,11 @@ class TemporalToyManifoldDataset(torch.utils.data.Dataset):
 
 def get_ToyManifoldDatasets(manifold, transition_model, split=(0.7, 0.15, 0.15), z_dim=2, x_dim=10, num_samples=1e6,
                             no_norm=False, rand_g_density=None, gt_graph_name=None):
+    c_dim = z_dim
     if rand_g_density is not None:
         assert 0 <= rand_g_density <= 1
         graph_proba = np.minimum(1, np.eye(z_dim) + rand_g_density)  # forces to have all self-loops (diagonal)
         gt_graph = np.random.binomial(1, graph_proba)
-        c_dim = z_dim
         print(gt_graph)
     elif gt_graph_name == "graph_action_1":
         assert z_dim == 10
@@ -352,6 +416,32 @@ def get_ToyManifoldDatasets(manifold, transition_model, split=(0.7, 0.15, 0.15),
                              [0, 0, 0, 1, 0],
                              [1, 0, 0, 0, 1],
                              [1, 0, 0, 0, 1]])
+    elif gt_graph_name == "graph_action_3.1_hard":
+        assert z_dim == 10
+        c_dim = 5
+        gt_graph = np.array([[1, 0, 0, 0, 0],
+                             [1, 0, 0, 0, 0],
+                             [0, 1, 0, 1, 0],
+                             [0, 1, 0, 1, 0],
+                             [0, 0, 1, 0, 0],
+                             [0, 0, 1, 0, 0],
+                             [0, 0, 0, 1, 0],
+                             [0, 0, 0, 1, 0],
+                             [0, 0, 0, 0, 1],
+                             [0, 0, 0, 0, 1]])
+    elif gt_graph_name == "graph_action_3.2_hard":
+        assert z_dim == 10
+        c_dim = 5
+        gt_graph = np.array([[1, 0, 0, 0, 0],
+                             [1, 0, 0, 0, 0],
+                             [0, 1, 1, 0, 0],
+                             [0, 1, 1, 0, 0],
+                             [0, 0, 1, 0, 0],
+                             [0, 0, 1, 0, 0],
+                             [0, 0, 0, 1, 0],
+                             [0, 0, 0, 1, 0],
+                             [1, 0, 0, 0, 1],
+                             [1, 0, 0, 0, 1]])
     elif gt_graph_name == "graph_temporal_1":
         assert z_dim == 10
         gt_graph = np.array([[1, 1, 1, 1, 1, 1, 1, 1, 0, 1],
@@ -389,6 +479,17 @@ def get_ToyManifoldDatasets(manifold, transition_model, split=(0.7, 0.15, 0.15),
                              [0, 0, 0, 0, 0, 0, 1, 1, 0, 0],
                              [1, 1, 0, 0, 1, 1, 0, 0, 1, 1],
                              [1, 1, 0, 0, 1, 1, 0, 0, 1, 1]])
+    elif gt_graph_name == "graph_temporal_3.1_hard":
+        gt_graph = np.array([[1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+                             [1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+                             [0, 0, 1, 1, 1, 1, 1, 1, 0, 0],
+                             [0, 0, 1, 1, 1, 1, 1, 1, 0, 0],
+                             [0, 0, 0, 0, 1, 1, 0, 0, 0, 0],
+                             [0, 0, 0, 0, 1, 1, 0, 0, 0, 0],
+                             [0, 0, 1, 1, 0, 0, 1, 1, 0, 0],
+                             [0, 0, 1, 1, 0, 0, 1, 1, 0, 0],
+                             [0, 0, 0, 0, 0, 0, 0, 0, 1, 1],
+                             [0, 0, 0, 0, 0, 0, 0, 0, 1, 1]])
     else:
         gt_graph = None
 

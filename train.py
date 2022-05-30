@@ -46,12 +46,22 @@ from disentanglement_via_mechanism_sparsity.optimization import CustomCMP
 
 
 def set_manual_seed(opt):
-    seed = opt.seed or random.randint(1, 10000)
+    if opt.seed is None:
+        seed = random.randint(1, 10000)
+    else:
+        seed = opt.seed
     random.seed(seed)
+    np.random.seed(seed)
     torch.manual_seed(seed)
 
     print("Using seed: {seed}".format(seed=seed))
 
+    if opt.deterministic_cudnn:
+        # https://pytorch.org/docs/stable/notes/randomness.html#cuda-convolution-benchmarking
+        torch.backends.cudnn.benchmark = False  # may hinder performance
+        # https://pytorch.org/docs/stable/notes/randomness.html#cuda-convolution-determinism
+        torch.backends.cudnn.deterministic = True
+        #torch.use_deterministic_algorithms(True)  # makes everything deterministic
 
 def get_dataset(opt):
     if opt.train_prop is None:
@@ -143,6 +153,20 @@ def main(opt):
     ## ---- Model ---- ##
     model = build_model(opt, device, image_shape, cont_c_dim, disc_c_dim, disc_c_n_values)
 
+    # setting graph to ground-truth
+    if opt.set_gc_mask_to_gt:
+        if hasattr(train_dataset, "gt_gc"):
+            model.latent_model.gc.freeze = True
+            model.latent_model.gc.fixed_mask.copy_(train_dataset.gt_gc)
+        else:
+            print("UserWarning: The attribute `gt_gc` is not provided in the dataset, so --set_gc_mask_to_gt is ignored.")
+    if opt.set_g_mask_to_gt:
+        if hasattr(train_dataset, "gt_g"):
+            model.latent_model.g.freeze = True
+            model.latent_model.g.fixed_mask.copy_(train_dataset.gt_g)
+        else:
+            print("UserWarning: The attribute `gt_g` is not provided in the dataset, so --set_g_mask_to_gt is ignored.")
+
     if hasattr(train_dataset, "gt_g"):
         max_e_g = train_dataset.gt_g.shape[0] * train_dataset.gt_g.shape[1]
         if opt.set_constraint_to_gt:
@@ -166,7 +190,7 @@ def main(opt):
 
     is_constrained = (opt.g_constraint > 0. or opt.gc_constraint > 0.)
     cmp = CustomCMP(opt.g_reg_coeff, opt.gc_reg_coeff, opt.g_constraint, opt.gc_constraint, g_scaling, gc_scaling,
-                    linear_schedule=(opt.constraint_schedule is not None), max_g=max_e_g, max_gc=max_e_gc)
+                    schedule=(opt.constraint_schedule is not None or opt.adaptive_constraint_schedule), max_g=max_e_g, max_gc=max_e_gc)
     formulation = cooper.LagrangianFormulation(cmp)
 
     if opt.no_adam_gumbel:
@@ -228,7 +252,7 @@ def main(opt):
         constrained_optimizer.zero_grad()
 
         # we keep the masks frozen for opt.frozen_masks_period iterations
-        if engine.state.iteration <= opt.frozen_masks_period:
+        if engine.state.iteration <= opt.frozen_masks_period or opt.set_g_mask_to_gt or opt.set_gc_mask_to_gt:
             model.latent_model.freeze_masks()
             if formulation.ineq_multipliers is not None:
                 # setting requires_grad to False causes problems with optimizer down the line. Let's just set it to 0.
@@ -303,6 +327,10 @@ def main(opt):
         @trainer.on(Events.ITERATION_COMPLETED)
         def update_constraint(engine):
             cmp.update_constraint(engine.state.iteration, opt.constraint_schedule, opt.frozen_masks_period)
+    elif opt.adaptive_constraint_schedule is not None:
+        @trainer.on(Events.ITERATION_COMPLETED)
+        def update_constraint(engine):
+            cmp.update_constraint_adaptive(engine.state.iteration, opt.frozen_masks_period)
 
     # Log GPU info
     if device != "cpu":
@@ -433,7 +461,7 @@ def main(opt):
 
                 # plotting
                 if len(evaluator.state.metrics) > 0:
-                    mcc, consistent_r, r, cc, C_hat, C_pattern, perm_mat, z, z_hat = evaluate_disentanglement(model, test_loader, device, opt)
+                    mcc, consistent_r, r, cc, C_hat, C_pattern, perm_mat, z, z_hat, transposed_consistent_r = evaluate_disentanglement(model, test_loader, device, opt)
                     fig = plot_matrix(cc, title="Representations correlation matrix", row_label="Ground-truth",
                                          col_label="Learned", row_names=z_names)
                     logger.log_figure("correlation_matrix", fig, step=engine.state.iteration)
@@ -451,6 +479,8 @@ def main(opt):
                     logger.log_metrics(step=engine.state.iteration, metrics={"mcc": mcc})
                     logger.log_metrics(step=engine.state.iteration, metrics={"consistent_r": consistent_r})
                     logger.log_metrics(step=engine.state.iteration, metrics={"r": r})
+                    logger.log_metrics(step=engine.state.iteration, metrics={"transposed_consistent_r": transposed_consistent_r})
+
 
                     # plot masks
                     if opt.n_lag > 0:
@@ -476,7 +506,7 @@ def main(opt):
                             if hasattr(train_dataset, "gt_g"):
                                 perm_gt_g = np.matmul(np.matmul(perm_mat.T, train_dataset.gt_g), perm_mat)
                             else:
-                                perm_gt_g = np.zeros_like(perm_mat)
+                                perm_gt_g = np.zeros_like(g_prob)
                             fig = plot_weighted_adjacency_vs_steps(np.stack(engine.g_probs, 0), perm_gt_g, engine.g_probs_iterations)
                             logger.log_figure("G^z", fig, step=engine.state.iteration)
                             plt.close(fig)
@@ -503,7 +533,7 @@ def main(opt):
                             if hasattr(train_dataset, "gt_gc"):
                                 perm_gt_gc = np.matmul(perm_mat.T, train_dataset.gt_gc)
                             else:
-                                perm_gt_gc = np.zeros_like(perm_mat)
+                                perm_gt_gc = np.zeros_like(gc_prob)
                             fig = plot_weighted_adjacency_vs_steps(np.stack(engine.gc_probs, 0), perm_gt_gc, engine.gc_probs_iterations)
                             logger.log_figure("G^a", fig, step=engine.state.iteration)
                             plt.close(fig)
@@ -643,10 +673,11 @@ def main(opt):
         metrics["num_examples_train"] = len(train_loader.dataset)
 
         if opt.mode != "latent_transition_only" :
-            mcc, consistent_r, r, cc, C_hat, C_pattern, perm_mat, z, z_hat = evaluate_disentanglement(model, test_loader, device, opt)
+            mcc, consistent_r, r, cc, C_hat, C_pattern, perm_mat, z, z_hat, transposed_consistent_r = evaluate_disentanglement(model, test_loader, device, opt)
             metrics["mean_corr_coef_final"] = mcc
             metrics["consistent_r_final"] = consistent_r
             metrics["r_final"] = r
+            metrics["transposed_consistent_r_final"] = transposed_consistent_r
 
             # Evaluate linear_score and MCC on best models after thresholding
             #best_files = [f.name for f in os.scandir(opt.output_dir) if f.name.startswith("best")]
@@ -774,6 +805,10 @@ def init_exp(args=None):
                         help="Do not learn g")
     parser.add_argument("--freeze_gc", action="store_true",
                         help="Do not learn gc")
+    parser.add_argument("--set_gc_mask_to_gt", action="store_true",
+                        help="Do not learn gc mask, fix it to ground truth value.")
+    parser.add_argument("--set_g_mask_to_gt", action="store_true",
+                        help="Do not learn g mask, fix it to ground truth value.")
     parser.add_argument("--unfreeze_dummies", action="store_true",
                         help="Learn the dummy parameters in masking")
     parser.add_argument("--var_p_mode", type=str, default="independent", choices=["dependent", "independent", "fixed"],
@@ -810,6 +845,8 @@ def init_exp(args=None):
                         help="Number of iterations we keep masks frozen")
     parser.add_argument("--constraint_schedule", type=int, default=None,
                         help="When specified, the upper bound on number of edges will linearly decrease taking this number of iterations.")
+    parser.add_argument("--adaptive_constraint_schedule", action="store_true",
+                        help="The upper bound is progressively reduced. -1 when defects < 0")
     parser.add_argument("--max_grad_clip", type=float, default=0,
                         help="Max gradient value (clip above - for off)")
     parser.add_argument("--max_grad_norm", type=float, default=0,
@@ -854,8 +891,11 @@ def init_exp(args=None):
                         help="Disables cuda")
     parser.add_argument("--double", action="store_true",
                         help="Use Double precision")
-    parser.add_argument("--seed", type=int, default=0,
+    parser.add_argument("--seed", type=int, default=None,
                         help="manual seed")
+    parser.add_argument("--deterministic_cudnn", action="store_true",
+                        help="Forces determinism in cudnn, for greater reproducibilty on GPU.")
+
 
     if args is not None:
         opt = parser.parse_args(args)
