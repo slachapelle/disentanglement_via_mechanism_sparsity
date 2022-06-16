@@ -102,8 +102,10 @@ def get_z_z_hat(model, data_loader, device, num_samples=int(1e5), opt=None):
         sample_counter = 0
         for batch in data_loader:
             obs, cont_c, disc_c, _, z = batch
+            b, t = obs.shape[0:2]
             #obs, z = obs[:, -1].to(device), z[:, -1].to(device)
-            obs, z = obs[:, 0].to(device), z[:, 0].to(device)  # using first sample instead of last one.
+            #obs, z = obs[:, 0].to(device), z[:, 0].to(device)  # using first sample instead of last one.
+            obs, z = obs.reshape((b * t,) + obs.shape[2:]).to(device), z.reshape((b * t,) + z.shape[2:]).to(device)  # using all steps.
 
             if opt.mode in ["vae", "random_vae", "supervised_vae"]:
                 if model.latent_model.z_block_size != 1:

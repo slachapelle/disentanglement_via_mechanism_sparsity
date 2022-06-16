@@ -12,11 +12,12 @@ from scipy.linalg import block_diag, norm
 
 
 def get_decoder(manifold, x_dim, z_dim, rng_data_gen):
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
     if manifold == "nn":
         # NOTE: injectivity requires z_dim <= h_dim <= x_dim
         h_dim = x_dim
         neg_slope = 0.2
-        device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
         # sampling NN weight matrices
         W1 = rng_data_gen.normal(size=(z_dim, h_dim))
@@ -64,6 +65,19 @@ def get_decoder(manifold, x_dim, z_dim, rng_data_gen):
             return out.cpu().numpy()
 
         noise_std = 0.01
+    elif manifold == "linear":
+        W = rng_data_gen.normal(size=(x_dim, z_dim))
+        W = torch.Tensor(W).to(device)
+        bias = rng_data_gen.normal(size=(x_dim,))
+        bias = torch.Tensor(bias).to(device)
+
+        def decoder(z):
+            with torch.no_grad():
+                z = torch.Tensor(z).to(device)
+                out = torch.matmul(z, W.T) + bias
+            return out.cpu().numpy()
+
+        noise_std = 0.01
     else:
         raise NotImplementedError(f"The manifold {self.manifold} is not implemented.")
 
@@ -103,7 +117,7 @@ class ActionToyManifoldDataset(torch.utils.data.Dataset):
                 gt_gc = np.concatenate([np.eye(self.z_dim), np.eye(self.z_dim)[:, 0:1]], 1)[:, 1:] + np.eye(self.z_dim)
             shift = np.repeat(np.arange(0, self.z_dim)[:, None], self.c_dim, 1)
 
-            def get_mean_var(c,  var_fac=0.0001):  #var_fac=0.1**2):  #var_fac=0.5**2):
+            def get_mean_var(c, var_fac=0.0001):  #var_fac=0.1**2):  #var_fac=0.5**2):
                 mu_tp1 = np.sum(gt_gc * np.sin(c[:, None, :] * mat_range + shift), 2)
                 var_tp1 = var_fac * np.ones_like(mu_tp1)
                 return mu_tp1, var_tp1

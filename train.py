@@ -922,7 +922,7 @@ def init_exp(args=None):
     if not opt.fresh:
         with os.scandir(opt.output_dir) as it:
             for entry in it:
-                if entry.name.startswith("terminate_checkpoint") and entry.name.endswith(".pt"):
+                if entry.name.startswith("terminate_model") and entry.name.endswith(".pt"):
                     print("This experiment is already completed and --fresh is False. Ending program.")
                     sys.exit()  # stop program
 
