@@ -124,6 +124,20 @@ class ActionToyManifoldDataset(torch.utils.data.Dataset):
 
             self.gt_gc = torch.Tensor(gt_gc)
 
+        elif self.transition_model == "action_sparsity_non_trivial_k=2":
+            mat_range = np.repeat(np.arange(3, self.z_dim + 3)[:, None] / np.pi, self.c_dim, 1)
+            if gt_gc is None:
+                assert self.c_dim == self.z_dim
+                gt_gc = np.concatenate([np.eye(self.z_dim), np.eye(self.z_dim)[:, 0:1]], 1)[:, 1:] + np.eye(self.z_dim)
+            shift = np.repeat(np.arange(0, self.z_dim)[:, None], self.c_dim, 1)
+
+            def get_mean_var(c):
+                mu_tp1 = np.sum(gt_gc * np.sin(c[:, None, :] * mat_range + shift), 2)
+                var_tp1 = 0.1 / c.shape[1] * np.exp(np.sum(gt_gc * np.cos(c[:, None, :] * mat_range + shift), 2))  # max at 0.1 * np.euler
+                return mu_tp1, var_tp1
+
+            self.gt_gc = torch.Tensor(gt_gc)
+
         elif self.transition_model == "action_sparsity_non_trivial_sigmoid":
             if gt_gc is None:
                 assert self.c_dim == self.z_dim
@@ -263,6 +277,20 @@ class TemporalToyManifoldDataset(torch.utils.data.Dataset):
 
             self.gt_g = torch.Tensor(gt_g)
 
+        elif self.transition_model == "temporal_sparsity_non_trivial_k=2":
+            mat_range = np.repeat(np.arange(3, self.z_dim + 3)[:, None] / np.pi, self.z_dim, 1)
+            if gt_g is None:
+                gt_g = np.tril(np.ones((self.z_dim, self.z_dim)))
+            shift = np.repeat(np.arange(0, self.z_dim)[:, None], self.z_dim, 1)
+
+            def get_mean_var(z_t, lr=0.5):
+                delta = np.sum(gt_g * np.sin(z_t[:, None, :] * mat_range + shift), 2)
+                mu_tp1 = z_t + lr * delta
+                var_tp1 = 0.1 / z_t.shape[1] * np.exp(np.sum(gt_g * np.cos(z_t[:, None, :] * mat_range + shift), 2))  # max at 0.1 * np.euler
+                return mu_tp1, var_tp1
+
+            self.gt_g = torch.Tensor(gt_g)
+
         elif self.transition_model == "temporal_sparsity_non_trivial_sigmoid":
             if gt_g is None:
                 gt_g = np.tril(np.ones((self.z_dim, self.z_dim)))
@@ -367,12 +395,16 @@ class TemporalToyManifoldDataset(torch.utils.data.Dataset):
 
 
 def get_ToyManifoldDatasets(manifold, transition_model, split=(0.7, 0.15, 0.15), z_dim=2, x_dim=10, num_samples=1e6,
-                            no_norm=False, rand_g_density=None, gt_graph_name=None):
+                            no_norm=False, rand_g_density=None, gt_graph_name=None, seed=0):
     c_dim = z_dim
     if rand_g_density is not None:
         assert 0 <= rand_g_density <= 1
-        graph_proba = np.minimum(1, np.eye(z_dim) + rand_g_density)  # forces to have all self-loops (diagonal)
-        gt_graph = np.random.binomial(1, graph_proba)
+        if transition_model.startswith("temporal_sparsity"):
+            graph_proba = np.minimum(1, np.eye(z_dim) + rand_g_density)  # forces to have all self-loops (diagonal)
+        else:
+            graph_proba = np.zeros((z_dim, z_dim)) + rand_g_density
+        rng = np.random.default_rng(45321 + seed)  # same graph is going to be used for a given seed
+        gt_graph = rng.binomial(1, graph_proba)
         print(gt_graph)
     elif gt_graph_name == "graph_action_1":
         assert z_dim == 10

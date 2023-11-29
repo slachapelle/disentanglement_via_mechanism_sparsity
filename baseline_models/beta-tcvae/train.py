@@ -31,7 +31,7 @@ from lib.flows import FactorialNormalizingFlow
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent))
 from train import get_dataset, get_loader
 from universal_logger.logger import UniversalLogger
-from metrics import get_z_z_hat, mean_corr_coef_np, get_linear_score
+from metrics import evaluate_disentanglement
 from model.nn import MLP as MLP_ilcm
 
 class View(torch.nn.Module):
@@ -526,6 +526,10 @@ def main(args):
                 train_elbo.append(elbo_running_mean.avg)
                 logger.log_metrics(step=iteration, metrics={"beta": vae.beta, "lambda": vae.lamb, "loss_train": -elbo_running_mean.val})
 
+            # stop loop if run out of iterations or time
+            if iteration > num_iterations or time.time() - t0 > time_limit:
+                break
+
     # save model
     vae.eval()
     utils.save_checkpoint({
@@ -538,17 +542,19 @@ def main(args):
         args.mode = "tcvae"
     else:
         args.mode = "betavae"
-    z, z_hat = get_z_z_hat(vae, test_loader, device, opt=args)
-    mcc, cc_program_perm, assignments = mean_corr_coef_np(z, z_hat)
-    linear_score = get_linear_score(z_hat, z)
+    mcc, consistent_r, r, cc, C_hat, C_pattern, perm_mat, z, z_hat, transposed_consistent_r = evaluate_disentanglement(vae, test_loader, device, args)
 
     ## ---- Save ---- ##
     # save scores
-    logger.log_metrics(step=0, metrics={"mcc": mcc, "linear_score": linear_score})
+    metrics = {"mean_corr_coef_final": mcc,
+               "consistent_r_final": consistent_r,
+               "r_final": r,
+               "transposed_consistent_r_final": transposed_consistent_r}
+    logger.log_metrics(step=0, metrics=metrics)
 
     # save both ground_truth and learned latents
-    np.save(os.path.join(args.output_dir, "z_hat.npy"), z_hat)
-    np.save(os.path.join(args.output_dir, "z_gt.npy"), z)
+    np.save(os.path.join(args.output_dir, "z_hat_final.npy"), z_hat)
+    np.save(os.path.join(args.output_dir, "z_gt_final.npy"), z)
 
 
 if __name__ == '__main__':
@@ -566,6 +572,10 @@ if __name__ == '__main__':
                         help="ground truth dimensionality of x (for MANIFOLD == 'nn')")
     parser.add_argument("--num_samples", type=float, default=int(1e6),
                         help="number of trajectories in toy dataset")
+    parser.add_argument("--rand_g_density", type=float, default=None,
+                        help="Probability of sampling an edge. When None, the graph is set to a default (or to gt_graph_name).")
+    parser.add_argument("--gt_graph_name", type=str, default=None,
+                        help="Name of the ground-truth graph to use in synthetic data.")
     parser.add_argument("--architecture", type=str, default='ilcm_tabular', choices=['ilcm_tabular', "standard_conv"],
                         help="VAE encoder/decoder architecture.")
     parser.add_argument("--train_prop", type=float, default=None,

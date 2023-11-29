@@ -13,7 +13,8 @@ def compute_nll(log_likelihood, valid, opt):
 
 
 class CustomCMP(cooper.ConstrainedMinimizationProblem):
-    def __init__(self, g_reg_coeff=0., gc_reg_coeff=0., g_constraint=0, gc_constraint=0., g_scaling=1., gc_scaling=1., schedule=False, max_g=0, max_gc=0):
+    def __init__(self, g_reg_coeff=0., gc_reg_coeff=0., g_constraint=0, gc_constraint=0., g_scaling=1., gc_scaling=1.,
+                 schedule=False, max_g=0, max_gc=0):
         self.is_constrained = (g_constraint > 0. or gc_constraint > 0.)
         self.g_reg_coeff = g_reg_coeff
         self.gc_reg_coeff = gc_reg_coeff
@@ -63,9 +64,9 @@ class CustomCMP(cooper.ConstrainedMinimizationProblem):
 
         if not self.is_constrained:
             if self.g_reg_coeff > 0:
-                loss += opt.g_reg_coeff * g_reg * g_scaling
+                loss += opt.g_reg_coeff * g_reg * self.g_scaling
             if self.gc_reg_coeff > 0:
-                loss += opt.gc_reg_coeff * gc_reg * gc_scaling
+                loss += opt.gc_reg_coeff * gc_reg * self.gc_scaling
 
             return cooper.CMPState(loss=loss, ineq_defect=None, eq_defect=None, misc=misc)
         else:
@@ -96,15 +97,25 @@ class CustomCMP(cooper.ConstrainedMinimizationProblem):
             if self.gc_constraint > 0:
                 self.current_gc_constraint = self.gc_constraint
 
-    def update_constraint_adaptive(self, iter, no_update_period=0):
+        return self.current_g_constraint, self.current_gc_constraint
+
+    def update_constraint_adaptive(self, iter, decrease_rate=0.0005, no_update_period=0):
         if iter <= no_update_period:
             if self.g_constraint > 0:
                 self.current_g_constraint = self.max_g
             if self.gc_constraint > 0:
                 self.current_gc_constraint = self.max_gc
         else:
-            if self.g_constraint > 0 and self.state.ineq_defect.sum() <= 0:
-                self.current_g_constraint = max(self.current_g_constraint - 1, self.g_constraint)
-            if self.gc_constraint > 0 and self.state.ineq_defect.sum() <= 0:
-                self.current_gc_constraint = max(self.current_gc_constraint - 1, self.gc_constraint)
+            # decrease constraint only when defect is smaller than 0.1, otherwise do not change constraint.
+            if self.g_constraint > 0 and self.state.ineq_defect.sum() <= 0.1:
+                self.current_g_constraint = max(self.current_g_constraint - decrease_rate, self.g_constraint)
+            if self.gc_constraint > 0 and self.state.ineq_defect.sum() <= 0.1:
+                self.current_gc_constraint = max(self.current_gc_constraint - decrease_rate, self.gc_constraint)
+
+        return self.current_g_constraint, self.current_gc_constraint
+
+            #if self.g_constraint > 0 and self.state.ineq_defect.sum() <= 0:
+            #    self.current_g_constraint = max(self.current_g_constraint - 1, self.g_constraint)
+            #if self.gc_constraint > 0 and self.state.ineq_defect.sum() <= 0:
+            #    self.current_gc_constraint = max(self.current_gc_constraint - 1, self.gc_constraint)
 

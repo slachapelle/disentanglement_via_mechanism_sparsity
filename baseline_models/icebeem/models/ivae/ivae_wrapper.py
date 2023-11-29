@@ -19,12 +19,12 @@ def IVAE_wrapper(X, U, latent_dim, batch_size=256, max_iter=7e4, seed=0, n_layer
     np.random.seed(seed)
 
     device = torch.device('cuda:0' if cuda else 'cpu')
-    # print('training on {}'.format(torch.cuda.get_device_name(device) if cuda else 'cpu'))
+    print('training on {}'.format(torch.cuda.get_device_name(device) if cuda else 'cpu'))
 
     # load data
     # print('Creating shuffled dataset..')
     dset = ConditionalDataset(X.astype(np.float32), U.astype(np.float32), device)
-    loader_params = {'num_workers': 1, 'pin_memory': True} if cuda else {}
+    loader_params = {'num_workers': 1, 'pin_memory': True, "generator": torch.Generator(device=device)} if cuda else {}
     train_loader = DataLoader(dset, shuffle=True, batch_size=batch_size, **loader_params)
     data_dim, _, aux_dim = dset.get_dims()
     N = len(dset)
@@ -63,6 +63,8 @@ def IVAE_wrapper(X, U, latent_dim, batch_size=256, max_iter=7e4, seed=0, n_layer
             if logger is not None and it%100 == 0:
                 metrics = {"loss_train": -elbo.item()}
                 logger.log_metrics(step=it, metrics=metrics)
+            if it > max_iter or time.time() - t0 > time_limit :
+                break
         elbo_train /= len(train_loader)
         scheduler.step(elbo_train)
 

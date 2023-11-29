@@ -1,0 +1,16 @@
+CLeaR 2022:
+/CLeaR2022/all_logs (8).npy
+to generate figures: https://colab.research.google.com/drive/1-gUajJMcGEEcpQA9nm9XcYB4ZLpR-wVc#scrollTo=thick-range
+
+JMLR (penalty):
+JMLR/penalty/all_logs_28jul2023_udr.npy (workshop data)
+JMLR/penalty/all_logs_12sep2023_rand_graphs_udr.npy
+to generate figures: https://colab.research.google.com/drive/1godG3MbAlLhB-FK95HJCHVQu2IjE8mM7#scrollTo=V0oKAFtzMXmw
+
+JMLR (constraint):
+JMLR/constraint/all_logs_18sep2023_JMLR_const_clear_udr.npy
+JMLR/constraint/all_logs_16sep2023_JMLR_const_ws_udr.npy
+JMLR/constraint/all_logs_19sep2023_JMLR_const_violation.npy
+JMLR/constraint/all_logs_23sep2023_JMLR_const_rand_g.npy
+to generate figures: https://colab.research.google.com/drive/1lftjqLUeoIQrNlWyKRrtPyXRXwyQz3Y5
+

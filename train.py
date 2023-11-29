@@ -73,7 +73,8 @@ def get_dataset(opt):
     manifold, transition_model = opt.dataset.split("-")[-1].split("/")
     datasets = get_ToyManifoldDatasets(manifold, transition_model, split=(train_prop, opt.valid_prop, opt.test_prop),
                                        z_dim=opt.gt_z_dim, x_dim=opt.gt_x_dim, num_samples=opt.num_samples,
-                                       no_norm=opt.no_norm, rand_g_density=opt.rand_g_density, gt_graph_name=opt.gt_graph_name)
+                                       no_norm=opt.no_norm, rand_g_density=opt.rand_g_density,
+                                       gt_graph_name=opt.gt_graph_name, seed=opt.seed)
     return datasets
 
 
@@ -87,7 +88,7 @@ def get_loader(opt, train_dataset, valid_dataset, test_dataset):
                                   num_workers=opt.n_workers,
                                   drop_last=True)
     return train_loader, valid_loader, test_loader
-
+clean
 
 def build_model(opt, device, image_shape, cont_c_dim, disc_c_dim, disc_c_n_values):
     latent_model = FCGaussianLatentModel(opt.z_max_dim, cont_c_dim, disc_c_dim,
@@ -326,11 +327,17 @@ def main(opt):
     if opt.constraint_schedule is not None:
         @trainer.on(Events.ITERATION_COMPLETED)
         def update_constraint(engine):
-            cmp.update_constraint(engine.state.iteration, opt.constraint_schedule, opt.frozen_masks_period)
+            current_g_cst, current_gc_cst = cmp.update_constraint(engine.state.iteration, opt.constraint_schedule, opt.frozen_masks_period)
+            logger.log_metrics(step=engine.state.iteration, metrics={"current_g_cst": current_g_cst,
+                                                                     "current_gc_cst": current_gc_cst})
     elif opt.adaptive_constraint_schedule is not None:
         @trainer.on(Events.ITERATION_COMPLETED)
         def update_constraint(engine):
-            cmp.update_constraint_adaptive(engine.state.iteration, opt.frozen_masks_period)
+            current_g_cst, current_gc_cst = cmp.update_constraint_adaptive(engine.state.iteration,
+                                                                           decrease_rate=opt.decrease_rate,
+                                                                           no_update_period=opt.frozen_masks_period)
+            logger.log_metrics(step=engine.state.iteration, metrics={"current_g_cst": current_g_cst,
+                                                                     "current_gc_cst": current_gc_cst})
 
     # Log GPU info
     if device != "cpu":
@@ -480,6 +487,7 @@ def main(opt):
                     logger.log_metrics(step=engine.state.iteration, metrics={"consistent_r": consistent_r})
                     logger.log_metrics(step=engine.state.iteration, metrics={"r": r})
                     logger.log_metrics(step=engine.state.iteration, metrics={"transposed_consistent_r": transposed_consistent_r})
+                    logger.log_metrics(step=engine.state.iteration, metrics={"nb_nonzero_C": np.count_nonzero(C_pattern)})
 
 
                     # plot masks
@@ -846,7 +854,9 @@ def init_exp(args=None):
     parser.add_argument("--constraint_schedule", type=int, default=None,
                         help="When specified, the upper bound on number of edges will linearly decrease taking this number of iterations.")
     parser.add_argument("--adaptive_constraint_schedule", action="store_true",
-                        help="The upper bound is progressively reduced. -1 when defects < 0")
+                        help="The upper bound is progressively reduced. decrease progressively, only when defects < 0.1")
+    parser.add_argument("--decrease_rate", type=float, default=0.0005,
+                        help="Decreasing rate of the constraint when --adaptive_constraint_schedule.")
     parser.add_argument("--max_grad_clip", type=float, default=0,
                         help="Max gradient value (clip above - for off)")
     parser.add_argument("--max_grad_norm", type=float, default=0,
