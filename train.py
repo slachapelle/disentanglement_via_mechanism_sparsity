@@ -801,8 +801,10 @@ def init_exp(args=None):
                         help="Will set the maximal number of edges to the number of edges in the ground-truth.")
     parser.add_argument("--drawhard", action="store_true",
                         help="Instead of using soft samples in gumbel sigmoid, use hard samples in forward.")
-    parser.add_argument("--one_gumbel_sample", action="store_true",
-                        help="Use only one sample of the gumbel masks per minibatch.")
+    #parser.add_argument("--one_gumbel_sample", action="store_true",
+    #                    help="Use only one sample of the gumbel masks per minibatch.")
+    parser.add_argument("--many_gumbel_sample", action="store_true",
+                        help="Use multiple samples of the gumbel masks per minibatch.")
     parser.add_argument("--gumbel_temperature", type=float, default=1.0,
                         help="Controls the temperature in the gumbel-sigmoid masks.")
     parser.add_argument("--louizos_gumbel", action="store_true",
@@ -821,8 +823,10 @@ def init_exp(args=None):
                         help="Learn the dummy parameters in masking")
     parser.add_argument("--var_p_mode", type=str, default="independent", choices=["dependent", "independent", "fixed"],
                         help="dependent: dependency on z^t-1, independent: no dep on z^t-1, fixed: not learned at all")
-    parser.add_argument("--learn_decoder_var", action="store_true",
-                        help="learn a variance of p(x|z)")
+    #parser.add_argument("--learn_decoder_var", action="store_true",
+    #                    help="learn a variance of p(x|z)")
+    parser.add_argument("--fix_decoder_var", action="store_true",
+                        help="do not learn the variance of p(x|z)")
     parser.add_argument("--init_decoder_var", type=float, default=None,
                         help="The initial variance of p(x|z).")
     parser.add_argument("--bn_enc_dec", action="store_true",
@@ -918,6 +922,8 @@ def init_exp(args=None):
     opt.freeze_dummies = not opt.unfreeze_dummies
     opt.z_max_dim = opt.z_dim
     opt.freeze_m = True
+    opt.learn_decoder_var = not opt.fix_decoder_var
+    opt.one_gumbel_sample = not opt.many_gumbel_sample
 
     # Hack to get a plot of the random representation and avoid training altogether
     if "random" in opt.mode:
