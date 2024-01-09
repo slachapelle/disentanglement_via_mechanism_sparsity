@@ -1,5 +1,6 @@
 import numpy as np
 from sklearn.linear_model import LinearRegression
+import sklearn
 from scipy.optimize import linear_sum_assignment
 from scipy.stats import spearmanr
 
@@ -92,56 +93,57 @@ class MyMetrics(Metric):
 
         return rval
 
-def get_linear_score(x, y):
-    reg = LinearRegression().fit(x, y)
-    return reg.score(x, y)
 
-
-def linear_regression_metric(model, data_loader, device, num_samples=int(1e5), indices=None, opt=None):
+def get_z_z_hat(model, data_loader, device, num_samples=int(1e5), opt=None):
     with torch.no_grad():
-        if model.latent_model.z_block_size != 1:
-            raise NotImplementedError("This function is implemented only for z_block_size == 1")
         model.eval()
         z_list = []
         z_hat_list = []
         sample_counter = 0
         for batch in data_loader:
-            obs, _, _, _, z = batch
-            obs, z = obs[:, -1].to(device), z[:, -1].to(device)
+            obs, cont_c, disc_c, _, z = batch
+            b, t = obs.shape[0:2]
+            #obs, z = obs[:, -1].to(device), z[:, -1].to(device)
+            #obs, z = obs[:, 0].to(device), z[:, 0].to(device)  # using first sample instead of last one.
+            obs, z = obs.reshape((b * t,) + obs.shape[2:]).to(device), z.reshape((b * t,) + z.shape[2:]).to(device)  # using all steps.
+
             if opt.mode in ["vae", "random_vae", "supervised_vae"]:
+                if model.latent_model.z_block_size != 1:
+                    raise NotImplementedError("This function is implemented only for z_block_size == 1")
                 z_hat = model.latent_model.mean(model.latent_model.transform_q_params(model.encode(obs)))
                 z_hat = z_hat.view(z_hat.shape[0], -1)
             elif opt.mode in ["infonce", "random_infonce", "supervised_infonce"]:
+                if model.latent_model.z_block_size != 1:
+                    raise NotImplementedError("This function is implemented only for z_block_size == 1")
                 z_hat = model.latent_model.transform_q_params(model.encode(obs))[0]
                 z_hat = z_hat.view(z_hat.shape[0], -1)
+            elif opt.mode == "ivae":
+                # WARNING: not using disc_c (discrete auxiliary information).
+                _, encoder_params, _, _ = model(obs, cont_c)
+                z_hat = encoder_params[0]  # extract mean
+            elif opt.mode in ["tcvae", "betavae"]:
+                z_hat = model.encode(obs)[1].select(-1, 0)
+            elif opt.mode in ["slowvae", "pcl"]:
+                z_hat = model._encode(obs)[:, :model.z_dim]
             else:
-                raise NotImplementedError(f"function linear_regression_metric is not implemented for --mode {opt.mode}")
-
+                raise NotImplementedError(f"function get_z_z_hat is not implemented for --mode {opt.mode}")
             z_list.append(z)
             z_hat_list.append(z_hat)
             sample_counter += obs.shape[0]
+            assert z.shape[0] == z_hat.shape[0] and z.shape[0] == obs.shape[0]
             if sample_counter >= num_samples:
                 break
+        # if num_samples is greater than number of examples in dataset
+        if sample_counter < num_samples:
+            num_samples = sample_counter
 
         z = torch.cat(z_list, 0)[:int(num_samples)]
         z_hat = torch.cat(z_hat_list, 0)[:int(num_samples)]
 
-        z, z_hat = z.cpu().numpy(), z_hat.cpu().numpy()
-
-        score = get_linear_score(z_hat, z)
-
-        # masking z_hat
-        # TODO: this does not take into account case where z_block_size > 1
-        if indices is not None:
-            z_hat_m = z_hat[:, indices[-z.shape[0]:]]
-            score_m = get_linear_score(z_hat_m, z)
-        else:
-            score_m = 0
-
-        return score, score_m
+        return z.cpu().numpy(), z_hat.cpu().numpy()
 
 
-def mean_corr_coef_np(x, y, method='pearson', indices=None):
+def mean_corr_coef_np(z, z_hat, method='pearson', indices=None):
     """
     Source: https://github.com/ilkhem/icebeem/blob/master/metrics/mcc.py
 
@@ -157,9 +159,10 @@ def mean_corr_coef_np(x, y, method='pearson', indices=None):
                     use Spearman's nonparametric rank correlation coefficient
     :return: float
     """
+    x, y = z, z_hat
     d = x.shape[1]
     if method == 'pearson':
-        cc = np.corrcoef(x, y, rowvar=False)[:d, d:]
+        cc = np.corrcoef(x, y, rowvar=False)[:d, d:]  # z x z_hat
     elif method == 'spearman':
         cc = spearmanr(x, y)[0][:d, d:]
     else:
@@ -182,52 +185,68 @@ def mean_corr_coef_np(x, y, method='pearson', indices=None):
     return score, cc_program_perm, assignments
 
 
-def mean_corr_coef(model, data_loader, device, num_samples=int(1e5), method='pearson', indices=None, opt=None):
-    """Source: https://github.com/ilkhem/icebeem/blob/master/metrics/mcc.py"""
-    with torch.no_grad():
-        model.eval()
-        z_list = []
-        z_hat_list = []
-        sample_counter = 0
-        for batch in data_loader:
-            obs, cont_c, disc_c, _, z = batch
-            obs, z = obs[:, -1].to(device), z[:, -1].to(device)
+def test_consistency(z, z_hat, assignments, dataset):
+    z_dim = z.shape[1]
+    perm_mat = np.zeros((z_dim, z_dim))
+    perm_mat[assignments] = 1 # perm_mat is P^T in paper
 
-            if opt.mode in ["vae", "random_vae", "supervised_vae"]:
-                if model.latent_model.z_block_size != 1:
-                    raise NotImplementedError("This function is implemented only for z_block_size == 1")
-                z_hat = model.latent_model.mean(model.latent_model.transform_q_params(model.encode(obs)))
-                z_hat = z_hat.view(z_hat.shape[0], -1)
-            elif opt.mode in ["infonce", "random_infonce", "supervised_infonce"]:
-                if model.latent_model.z_block_size != 1:
-                    raise NotImplementedError("This function is implemented only for z_block_size == 1")
-                z_hat = model.latent_model.transform_q_params(model.encode(obs))[0]
-                z_hat = z_hat.view(z_hat.shape[0], -1)
-            elif opt.mode == "ivae":
-                # WARNING: not using disc_c (discrete auxiliary information).
-                _, encoder_params, _, _ = model(obs, cont_c)
-                z_hat = encoder_params[0]  # extract mean
-            elif opt.mode in ["tcvae", "betavae"]:
-                z_hat = model.encode(obs)[1].select(-1, 0)
-            elif opt.mode in ["slowvae", "pcl"]:
-                z_hat = model._encode(obs)[:, :model.z_dim]
-            else:
-                raise NotImplementedError(f"function mean_corr_coef is not implemented for --mode {opt.mode}")
-            z_list.append(z)
-            z_hat_list.append(z_hat)
-            sample_counter += obs.shape[0]
-            if sample_counter >= num_samples:
-                break
-        # if num_samples is greater than number of examples in dataset
-        if sample_counter < num_samples:
-            num_samples = sample_counter
+    # Compute G-consistency pattern
+    C = np.ones_like(perm_mat)
+    if hasattr(dataset, "gt_g"):
+        gt_g = dataset.gt_g.cpu().numpy()
+        g_pattern = np.maximum(0, 1 - np.matmul(gt_g, 1 - gt_g.T)) * np.maximum(0, 1 - np.matmul(gt_g.T, 1 - gt_g))
+        C *= g_pattern
+    if hasattr(dataset, "gt_gc"):
+        gt_gc = dataset.gt_gc.cpu().numpy()
+        gc_pattern = np.maximum(0, 1 - np.matmul(gt_gc, 1 - gt_gc.T))
+        C *= gc_pattern
 
-        z = torch.cat(z_list, 0)[:int(num_samples)]
-        z_hat = torch.cat(z_hat_list, 0)[:int(num_samples)]
+    L_pattern = np.matmul(C, perm_mat)
 
-        z, z_hat = z.cpu().numpy(), z_hat.cpu().numpy()
-        score, cc_program_perm, assignments = mean_corr_coef_np(z, z_hat, method, indices)
-        return score, cc_program_perm, assignments, z, z_hat
+    consistent_r = 0
+    for i in range(z.shape[1]):
+        masked_z_hat = z_hat * L_pattern[i, :]
+        reg = LinearRegression(fit_intercept=True).fit(masked_z_hat, z[:, i])
+        consistent_r += np.sqrt(reg.score(masked_z_hat, z[:, i]))  # the sqrt of R^2 is called the "coefficient of multiple correlation".
+    consistent_r /= z.shape[1]
+
+    # same as above, but with transposed C
+    L_pattern_ = np.matmul(C.T, perm_mat)
+
+    transposed_consistent_r = 0
+    for i in range(z.shape[1]):
+        masked_z_hat = z_hat * L_pattern_[i, :]
+        reg = LinearRegression(fit_intercept=True).fit(masked_z_hat, z[:, i])
+        transposed_consistent_r += np.sqrt(reg.score(masked_z_hat, z[:, i]))  # the sqrt of R^2 is called the "coefficient of multiple correlation".
+    transposed_consistent_r /= z.shape[1]
+
+    return consistent_r, transposed_consistent_r, C
+
+
+def get_linear_score(x, y):
+    reg = LinearRegression(fit_intercept=True).fit(x, y)
+    y_pred = reg.predict(x)
+    r2s = sklearn.metrics.r2_score(y, y_pred, multioutput='raw_values')
+    r = np.mean(np.sqrt(r2s))  # To be comparable to MCC (this is the average of R = coefficient of multiple correlation)
+    return r, reg.coef_
+
+
+def linear_regression_metric(z, z_hat, indices=None):
+    # standardize z and z_hat
+    z = (z - np.mean(z, 0)) / np.std(z, 0)
+    z_hat = (z_hat - np.mean(z_hat, 0)) / np.std(z_hat, 0)
+
+    score, L_hat = get_linear_score(z_hat, z)
+
+    # masking z_hat
+    # TODO: this does not take into account case where z_block_size > 1
+    if indices is not None:
+        z_hat_m = z_hat[:, indices[-z.shape[0]:]]
+        score_m, _ = get_linear_score(z_hat_m, z)
+    else:
+        score_m = 0
+
+    return score, score_m, L_hat
 
 
 def edge_errors(target, pred):
@@ -243,5 +262,17 @@ def shd(target, pred):
     return sum(edge_errors(target, pred))
 
 
+def evaluate_disentanglement(model, data_loader, device, opt):
+    z, z_hat = get_z_z_hat(model, data_loader, device, opt=opt)
+    mcc, cc, assignments = mean_corr_coef_np(z, z_hat)
+    consistent_r, transposed_consistent_r, C_pattern = test_consistency(z, z_hat, assignments, data_loader.dataset)
+    r, _, L_hat = linear_regression_metric(z, z_hat)
 
+    perm_mat = np.zeros_like(L_hat)
+    perm_mat[assignments] = 1  # perm_mat is P^T in paper
+    C_hat = np.matmul(L_hat, perm_mat.T)
+
+    #np.set_printoptions(formatter={'float': lambda x: "{0:0.3f}".format(x)})
+    #print(np.corrcoef(z, rowvar=False))
+    return mcc, consistent_r, r, cc, C_hat, C_pattern, perm_mat, z, z_hat, transposed_consistent_r
 

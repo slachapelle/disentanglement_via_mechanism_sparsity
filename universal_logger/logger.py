@@ -4,6 +4,7 @@
 import json
 import numpy as np
 import os
+import queue
 
 from time import strftime, time
 
@@ -55,10 +56,12 @@ class CometLogger(object):
 
 
 class JsonLogger(object):
-    def __init__(self, path, time=True):
+    def __init__(self, path, time=True, max_fig_save=None):
         self.path = path
         os.makedirs(os.path.dirname(path), exist_ok=True)
         self.time = time
+        self.max_fig_save = max_fig_save  # makes sure we don't save too many .png files.
+        self.current_figs = {}
 
     def log_metrics(self, stage, step, metrics):
         metrics["stage"] = stage
@@ -73,7 +76,17 @@ class JsonLogger(object):
         #    prefix += stage + "/"
         # if step is not None:
         #    prefix += str(step) + "/"
-        figure.savefig(os.path.join(self.path, f"{name}_{step}.png"))
+        if name not in self.current_figs.keys():
+            self.current_figs[name] = queue.Queue()
+
+        file_name = f"{name}_{step}.png"
+        figure.savefig(os.path.join(self.path, file_name))
+        self.current_figs[name].put(file_name)
+
+        # removing old figures
+        if self.current_figs[name].qsize() > self.max_fig_save:
+            file_to_delete = self.current_figs[name].get()
+            os.remove(os.path.join(self.path, file_to_delete))
 
 
 class StdoutLogger(object):
@@ -121,7 +134,7 @@ class UniversalLogger(object):
         The minimum time between logs in seconds
 
     """
-    def __init__(self, comet=None, json=None, stdout=False, tensorboardx=None, time=True, throttle=None):
+    def __init__(self, comet=None, json=None, stdout=False, tensorboardx=None, time=True, throttle=None, max_fig_save=None):
         super().__init__()
         loggers = []
         if comet is not None:
@@ -129,7 +142,7 @@ class UniversalLogger(object):
                 raise RuntimeError("comet_ml is not available on this platform. Please install it.")
             loggers.append(CometLogger(experiment=comet))
         if json is not None:
-            loggers.append(JsonLogger(json, time=time))
+            loggers.append(JsonLogger(json, time=time, max_fig_save=max_fig_save))
         if stdout:
             loggers.append(StdoutLogger(time=time))
         if tensorboardx is not None:

@@ -16,12 +16,13 @@ class ConditionalDataset(Dataset):
 
     def __init__(self, X, Y, device='cpu'):
         self.device = device
-        self.x = torch.from_numpy(X)  # .to(device)
-        self.y = torch.from_numpy(Y)  # .to(device)  # if discrete, then this should be one_hot
+        self.x = torch.from_numpy(X)  #.to(device)
+        self.y = torch.from_numpy(Y)  #.to(device)  # if discrete, then this should be one_hot
         self.len = self.x.shape[0]
         self.aux_dim = self.y.shape[1]
         self.data_dim = self.x.shape[1]
         self.latent_dim = self.data_dim
+        print(self.x.get_device(), self.y.get_device())
 
     def __len__(self):
         return self.len

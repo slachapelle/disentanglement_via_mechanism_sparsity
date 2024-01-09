@@ -18,7 +18,7 @@ from scripts.solver import Solver
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent))
 from train import get_dataset, get_loader
 from universal_logger.logger import UniversalLogger
-from metrics import mean_corr_coef, get_linear_score
+from metrics import evaluate_disentanglement
 
 torch.backends.cudnn.enabled = True
 torch.backends.cudnn.benchmark = True
@@ -78,18 +78,20 @@ def main(args, writer=None):
     else:
         print('done in %.2fs' % (time.time() - t0))
 
-        ## ---- Evaluate performance ---- ##
-        # compute MCC and save representation
-        mcc, cc_program_perm, assignments, z, z_hat = mean_corr_coef(net.net, test_loader, device, opt=args)
-        linear_score = get_linear_score(z_hat, z)
+        ## ---- Evaluate performance ---- #
+        mcc, consistent_r, r, cc, C_hat, C_pattern, perm_mat, z, z_hat, transposed_consistent_r = evaluate_disentanglement(net.net, test_loader, device, args)
 
         ## ---- Save ---- ##
         # save scores
-        logger.log_metrics(step=0, metrics={"mcc": mcc, "linear_score": linear_score})
+        metrics = {"mean_corr_coef_final": mcc,
+                   "consistent_r_final": consistent_r,
+                   "r_final": r,
+                   "transposed_consistent_r_final": transposed_consistent_r}
+        logger.log_metrics(step=0, metrics=metrics)
 
         # save both ground_truth and learned latents
-        np.save(os.path.join(args.output_dir, "z_hat.npy"), z_hat)
-        np.save(os.path.join(args.output_dir, "z_gt.npy"), z)
+        np.save(os.path.join(args.output_dir, "z_hat_final.npy"), z_hat)
+        np.save(os.path.join(args.output_dir, "z_gt_final.npy"), z)
 
 
 ### For Random Search ###
@@ -144,6 +146,10 @@ if __name__ == "__main__":
                         help="comet workspace")
     parser.add_argument('--comet_project_name', type=str, default=None,
                         help="comet project_name")
+    parser.add_argument("--rand_g_density", type=float, default=None,
+                        help="Probability of sampling an edge. When None, the graph is set to a default (or to gt_graph_name).")
+    parser.add_argument("--gt_graph_name", type=str, default=None,
+                        help="Name of the ground-truth graph to use in synthetic data.")
     parser.add_argument("--add_noise", type=float, default=0.0,
                         help="Add normal noise sigma = add_noise on images (only training data)")
     parser.add_argument("--no_cuda", action="store_false", dest="cuda",

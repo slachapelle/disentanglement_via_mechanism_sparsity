@@ -18,7 +18,7 @@ from baseline_models.icebeem.models.ivae.ivae_wrapper import IVAE_wrapper
 from baseline_models.icebeem.models.icebeem_wrapper import ICEBEEM_wrapper
 from train import get_dataset, get_loader
 from universal_logger.logger import UniversalLogger
-from metrics import mean_corr_coef, get_linear_score
+from metrics import evaluate_disentanglement
 
 def parse_sim():
     parser = argparse.ArgumentParser(description='')
@@ -36,6 +36,10 @@ def parse_sim():
                         help="ground truth dimensionality of x (for MANIFOLD == 'nn')")
     parser.add_argument("--num_samples", type=float, default=int(1e6),
                         help="Number of samples")
+    parser.add_argument("--rand_g_density", type=float, default=None,
+                        help="Probability of sampling an edge. When None, the graph is set to a default (or to gt_graph_name).")
+    parser.add_argument("--gt_graph_name", type=str, default=None,
+                        help="Name of the ground-truth graph to use in synthetic data.")
     parser.add_argument("--architecture", type=str, default='ilcm_tabular', choices=['ilcm_tabular'],
                         help="encoder/decoder architecture.")
     parser.add_argument("--learn_decoder_var", action='store_true',
@@ -88,6 +92,11 @@ def main(args):
 
     device = torch.device('cuda:0' if args.cuda else 'cpu')
 
+    if args.method.lower() == 'ivae':
+        args.mode = "ivae"
+    else:
+        raise ValueError('Unsupported method {}'.format(args.method))
+
     ## ---- Save hparams ---- ##
     kwargs = vars(args)
     with open(os.path.join(args.output_dir, "hparams.json"), "w") as fp:
@@ -115,31 +124,25 @@ def main(args):
                              json=args.output_dir, throttle=None)
 
     ## ---- Running ---- ##
-    if args.method.lower() == 'ivae':
-        args.mode = "ivae"
-        # the argument `architecture="ilcm_tabular"` will choose the same encoder/decoder as in ilcm for synthetic experiments.
-        model = IVAE_wrapper(x, y, args.gt_z_dim, ckpt_folder=args.output_dir, batch_size=args.batch_size, max_iter=args.max_iter, #max_iter=100,
-                            seed=args.seed, n_layers=5, hidden_dim=512, lr=args.ivae_lr,
-                            architecture=args.architecture, logger=logger, time_limit=args.time_limit, learn_decoder_var=args.learn_decoder_var)
-    #elif args.method.lower() in ['ice-beem', 'icebeem']:
-    #    # TODO
-    #    args.mode = "icebeem"
-    #    z, model, params = ICEBEEM_wrapper(X, Y, ebm_hidden_size, n_layers_ebm, n_layers_flow, lr_flow, lr_ebm, seed)
-    else:
-        raise ValueError('Unsupported method {}'.format(args.method))
+    # the argument `architecture="ilcm_tabular"` will choose the same encoder/decoder as in ilcm for synthetic experiments.
+    model = IVAE_wrapper(x, y, args.gt_z_dim, ckpt_folder=args.output_dir, batch_size=args.batch_size, max_iter=args.max_iter, #max_iter=100,
+                        seed=args.seed, n_layers=5, hidden_dim=512, lr=args.ivae_lr,
+                        architecture=args.architecture, logger=logger, time_limit=args.time_limit, learn_decoder_var=args.learn_decoder_var)
 
     ## ---- Evaluate performance ---- ##
-    # compute MCC and save representation
-    mcc, cc_program_perm, assignments, z, z_hat = mean_corr_coef(model, test_loader, device, opt=args)
-    linear_score = get_linear_score(z_hat, z)
+    mcc, consistent_r, r, cc, C_hat, C_pattern, perm_mat, z, z_hat, transposed_consistent_r = evaluate_disentanglement(model, test_loader, device, args)
 
     ## ---- Save ---- ##
     # save scores
-    logger.log_metrics(step=0, metrics={"mcc": mcc, "linear_score": linear_score})
+    metrics = {"mean_corr_coef_final": mcc,
+               "consistent_r_final": consistent_r,
+               "r_final": r,
+               "transposed_consistent_r_final": transposed_consistent_r}
+    logger.log_metrics(step=0, metrics=metrics)
 
     # save both ground_truth and learned latents
-    np.save(os.path.join(args.output_dir, "z_hat.npy"), z_hat)
-    np.save(os.path.join(args.output_dir, "z_gt.npy"), z)
+    np.save(os.path.join(args.output_dir, "z_hat_final.npy"), z_hat)
+    np.save(os.path.join(args.output_dir, "z_gt_final.npy"), z)
 
 if __name__ == '__main__':
     args = parse_sim()
