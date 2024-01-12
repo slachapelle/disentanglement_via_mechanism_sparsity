@@ -2,7 +2,7 @@
 
 This repository contains the code used to run the experiments in the papers:<br>
 [1] [Disentanglement via Mechanism Sparsity Regularization: A New Principle for Nonlinear ICA](https://arxiv.org/abs/2107.10098) (CLeaR2022)<br>
-[2] Nonparametric Partial Disentanglement via Mechanism Sparsity: Sparse Actions, Interventions and Sparse Temporal Dependencies (Arxiv link coming soon!)<br> 
+[2] [Nonparametric Partial Disentanglement via Mechanism Sparsity: Sparse Actions, Interventions and Sparse Temporal Dependencies](https://arxiv.org/abs/2401.04890) (Preprint)<br> 
 By Sébastien Lachapelle, Pau Rodríguez López, Yash Sharma, Katie Everett, Rémi Le Priol, Alexandre Lacoste, Simon Lacoste-Julien
 
 ### Environment:
